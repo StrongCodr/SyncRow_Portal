@@ -1,0 +1,67 @@
+[project]
+name = "srow"
+version = "0.1.0"
+description = "High-performance rowing data visualization and synchronization analysis"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    # Panel ecosystem
+    "panel>=1.3.0",
+    "holoviews>=1.18.0",
+    "hvplot>=0.9.0",
+    "datashader>=0.16.0",
+    "bokeh>=3.3.0",
+
+    # Geospatial
+    "geoviews>=1.11.0",
+    "geopandas>=0.14.0",
+
+    # Data handling
+    "pandas>=2.1.0",
+    "numpy>=1.26.0",
+    "pyarrow>=14.0.0",  # For Parquet local cache
+
+    # InfluxDB
+    "influxdb-client>=1.38.0",
+    "certifi",
+
+    # Signal processing
+    "scipy>=1.11.0",
+
+    # Utilities
+    "param>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.1.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]
+
+[tool.coverage.run]
+source = ["srow"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]

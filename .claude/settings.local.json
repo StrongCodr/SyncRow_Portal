@@ -1,0 +1,39 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc:*)",
+      "WebSearch",
+      "Bash(grep:*)",
+      "Bash(python3:*)",
+      "Bash(find:*)",
+      "Bash(/Users/vance/dev/SyncRow/.venv/bin/pip list:*)",
+      "Bash(open http://localhost:5006/app)",
+      "Bash(source .venv/bin/activate)",
+      "Bash(python -m pytest:*)",
+      "Bash(python:*)",
+      "WebFetch(domain:www.sensor-test.de)",
+      "WebFetch(domain:witmotion-sensor.com)",
+      "WebFetch(domain:www.robotshop.com)",
+      "WebFetch(domain:rcdrone.top)",
+      "WebFetch(domain:wit-motion.gitbook.io)",
+      "WebFetch(domain:manuals.plus)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:m.media-amazon.com)",
+      "WebFetch(domain:www.wit-motion.com)",
+      "WebFetch(domain:cdn.robotshop.com)",
+      "WebFetch(domain:cdck-file-uploads-europe1.s3.dualstack.eu-west-1.amazonaws.com)",
+      "Bash(source:*)",
+      "Bash(/Users/vance/dev/srow/.venv/bin/python3:*)",
+      "Bash(/Users/vance/dev/srow/.venv/bin/pip list:*)",
+      "Bash(pip3 list:*)",
+      "Bash(pip3 install:*)",
+      "Bash(.venv/bin/ruff check:*)",
+      "Bash(.venv/bin/python:*)",
+      "Bash(/Users/vance/dev/srow/.venv/bin/python:*)",
+      "Bash(ls:*)",
+      "Bash(node:*)",
+      "Bash(.venv/bin/python3:*)",
+      "Bash(cloc:*)"
+    ]
+  }
+}
