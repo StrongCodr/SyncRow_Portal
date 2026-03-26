@@ -165,43 +165,99 @@ def detect_active_windows(
     return windows
 
 
-def find_pitch_crossings(
-    src_df: pd.DataFrame, times_sec: np.ndarray, sample_rate: float
-) -> tuple[list[float], list[float], list[float], list[float]] | None:
-    """Find median-crossing times in the pitch signal.
+def _select_rowing_channel(
+    src_df: pd.DataFrame, sample_rate: float
+) -> str | None:
+    """Identify which orientation channel (pitch, roll, or yaw) carries the
+    dominant rowing oscillation for this sensor.
+
+    The sensor may be taped to the oar at any rotation, so the rowing motion
+    could appear in any channel.  We pick the one with the highest IQR
+    (interquartile range) after light smoothing — this is robust to outliers
+    and does not assume which axis the motion lands on.
+
+    Returns the column name, or None if no channel has meaningful oscillation.
+    """
+    smooth_n = max(int(0.1 * sample_rate), 3)
+    if smooth_n % 2 == 0:
+        smooth_n += 1
+
+    best_col: str | None = None
+    best_iqr = 0.0
+
+    for col in ("pitch", "roll", "yaw"):
+        if col not in src_df.columns:
+            continue
+        vals = src_df[col].astype(float).interpolate(limit_direction="both").values
+        if len(vals) < int(2 * sample_rate):
+            continue
+        smoothed = (
+            pd.Series(vals).rolling(smooth_n, center=True, min_periods=1).mean().values
+        )
+        iqr = float(np.percentile(smoothed, 75) - np.percentile(smoothed, 25))
+        if iqr > best_iqr:
+            best_iqr = iqr
+            best_col = col
+
+    # Require at least 5° IQR to be considered meaningful oscillation
+    if best_iqr < 5.0:
+        return None
+    return best_col
+
+
+def find_rowing_crossings(
+    src_df: pd.DataFrame,
+    times_sec: np.ndarray,
+    sample_rate: float,
+    channel: str | None = None,
+) -> tuple[list[float], list[float], list[float], list[float], str] | None:
+    """Find median-crossing times in the dominant orientation channel.
+
+    Automatically selects the orientation axis (pitch, roll, or yaw) with
+    the strongest oscillation, so the algorithm works regardless of how the
+    sensor is mounted on the oar.
 
     Median crossings give far better timing precision than peak/trough
     detection because the signal moves fastest through its midpoint.
     At extrema the signal lingers (especially on plateau waveforms),
     shifting the detected position by hundreds of ms.
 
-    Returns (up_times, down_times, gyro_after_up, gyro_after_down)
+    Parameters
+    ----------
+    src_df : DataFrame for a single sensor window.
+    times_sec : epoch timestamps aligned to src_df rows.
+    sample_rate : estimated sample rate (Hz).
+    channel : force a specific column; auto-detected if None.
+
+    Returns (up_times, down_times, gyro_after_up, gyro_after_down, channel)
     or None if the signal is too short/flat.
     The caller aggregates across windows and decides which direction = catch.
     """
-    if "pitch" not in src_df.columns:
+    if channel is None:
+        channel = _select_rowing_channel(src_df, sample_rate)
+    if channel is None or channel not in src_df.columns:
         return None
 
-    pitch = src_df["pitch"].astype(float).interpolate(limit_direction="both").values
+    signal = src_df[channel].astype(float).interpolate(limit_direction="both").values
 
-    if len(pitch) < int(2 * sample_rate):
+    if len(signal) < int(2 * sample_rate):
         return None
 
     # Light smoothing: 0.1s removes sensor jitter without shifting transitions
     smooth_n = max(int(0.1 * sample_rate), 3)
     if smooth_n % 2 == 0:
         smooth_n += 1
-    pitch_smooth = (
-        pd.Series(pitch).rolling(smooth_n, center=True, min_periods=1).mean().values
+    signal_smooth = (
+        pd.Series(signal).rolling(smooth_n, center=True, min_periods=1).mean().values
     )
 
     # Check signal has meaningful oscillation
-    iqr = np.percentile(pitch_smooth, 75) - np.percentile(pitch_smooth, 25)
+    iqr = np.percentile(signal_smooth, 75) - np.percentile(signal_smooth, 25)
     if iqr < 5.0:
         return None
 
-    median_pitch = np.median(pitch_smooth)
-    above = pitch_smooth > median_pitch
+    median_val = np.median(signal_smooth)
+    above = signal_smooth > median_val
 
     up_times: list[float] = []
     down_times: list[float] = []
@@ -211,11 +267,11 @@ def find_pitch_crossings(
     for i in range(1, len(above)):
         if above[i] == above[i - 1]:
             continue
-        denom = pitch_smooth[i] - pitch_smooth[i - 1]
+        denom = signal_smooth[i] - signal_smooth[i - 1]
         if abs(denom) < 1e-6:
             continue
         # Linear interpolation for sub-sample precision
-        frac = (median_pitch - pitch_smooth[i - 1]) / denom
+        frac = (median_val - signal_smooth[i - 1]) / denom
         t = times_sec[i - 1] + frac * (times_sec[i] - times_sec[i - 1])
 
         if above[i]:  # crossing upward
@@ -244,6 +300,7 @@ def find_pitch_crossings(
         down_times,
         _gyro_after(up_indices),
         _gyro_after(down_indices),
+        channel,
     )
 
 
@@ -291,8 +348,10 @@ def process_interval(
 
     # Store both crossing directions per source for later phase alignment
     sensor_crossings: dict[str, tuple[list[float], list[float], float, float]] = {}
-    # Store pitch + times per source for per-stroke range filtering (Step 5)
-    source_pitch: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    # Store rowing-channel signal + times per source for per-stroke range
+    # filtering (Step 5).  The channel may differ per sensor depending on
+    # how it is mounted on the oar.
+    source_rowing_signal: dict[str, tuple[np.ndarray, np.ndarray]] = {}
 
     for source in sources:
         src_df = (
@@ -313,10 +372,17 @@ def process_interval(
 
         times_epoch = src_df["time"].values.astype("datetime64[ns]").astype("int64") / 1e9
 
-        if "pitch" in src_df.columns:
-            source_pitch[source] = (
+        # Select the dominant orientation channel once per sensor using
+        # the full signal, then reuse it for every active window.
+        rowing_channel = _select_rowing_channel(src_df, src_rate)
+
+        if rowing_channel is not None and rowing_channel in src_df.columns:
+            source_rowing_signal[source] = (
                 times_epoch,
-                src_df["pitch"].astype(float).interpolate(limit_direction="both").values,
+                src_df[rowing_channel]
+                .astype(float)
+                .interpolate(limit_direction="both")
+                .values,
             )
 
         all_up: list[float] = []
@@ -325,12 +391,13 @@ def process_interval(
         gyro_down: list[float] = []
 
         for ws, we in active_windows:
-            result = find_pitch_crossings(
-                src_df.iloc[ws:we], times_epoch[ws:we], src_rate
+            result = find_rowing_crossings(
+                src_df.iloc[ws:we], times_epoch[ws:we], src_rate,
+                channel=rowing_channel,
             )
             if result is None:
                 continue
-            up_t, down_t, ug, dg = result
+            up_t, down_t, ug, dg, _ch = result
             all_up.extend(up_t)
             all_down.extend(down_t)
             gyro_up.extend(ug)
@@ -395,15 +462,16 @@ def process_interval(
                 filtered.append(arr[i])
         source_catches[source] = np.array(filtered)
 
-    # ── Step 5: Filter drill strokes by per-stroke pitch range ──
-    # Drills (arms only, body swing, half slide) have shorter pitch arcs.
-    # For each sensor, compute the 75th percentile of per-stroke pitch range
-    # and discard catches whose stroke has range < 60% of that reference.
+    # ── Step 5: Filter drill strokes by per-stroke signal range ──
+    # Drills (arms only, body swing, half slide) have shorter arcs in the
+    # dominant orientation channel.  For each sensor, compute the 75th
+    # percentile of per-stroke range and discard catches whose stroke has
+    # range < 60% of that reference.
 
     for source in list(source_catches):
-        if source not in source_pitch:
+        if source not in source_rowing_signal:
             continue
-        s_times, s_pitch = source_pitch[source]
+        s_times, s_pitch = source_rowing_signal[source]
         arr = source_catches[source]
         if len(arr) < 4:
             continue
