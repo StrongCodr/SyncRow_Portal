@@ -49,3 +49,7 @@ Thumbs.db
 
 # Jupyter (if used)
 .ipynb_checkpoints/
+
+# deploy secrets (never commit real ones)
+portal.env
+credentials.json

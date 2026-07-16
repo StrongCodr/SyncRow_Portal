@@ -1,0 +1,44 @@
+[Unit]
+Description=SyncRow Portal (Panel dashboard)
+# InfluxDB runs on this same box; start after it and the network are up.
+After=network-online.target influxdb.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=syncrow
+Group=syncrow
+WorkingDirectory=/opt/syncrow/SyncRow_Portal
+
+# All secrets + config live here (root-owned, mode 600), NOT in the repo.
+# Provides: INFLUX_URL, INFLUX_TOKEN, INFLUX_ORG, INFLUX_ORG_ID, INFLUX_BUCKET,
+#           PORTAL_DOMAIN, COOKIE_SECRET
+EnvironmentFile=/etc/syncrow/portal.env
+
+# Bind to localhost only — nginx is the sole public face (TLS terminates there).
+# Basic auth: credentials.json maps username -> password (root-owned, mode 600).
+ExecStart=/opt/syncrow/SyncRow_Portal/.venv/bin/panel serve app.py \
+    --address 127.0.0.1 \
+    --port 5006 \
+    --num-procs 1 \
+    --allow-websocket-origin=${PORTAL_DOMAIN} \
+    --basic-auth /etc/syncrow/credentials.json \
+    --cookie-secret ${COOKIE_SECRET} \
+    --keep-alive 10000 \
+    --check-unused-sessions 30000
+
+Restart=on-failure
+RestartSec=5
+
+# --- Hardening ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+# venv + parquet cache live under the app dir; allow writes there only.
+ReadWritePaths=/opt/syncrow/SyncRow_Portal
+
+[Install]
+WantedBy=multi-user.target
