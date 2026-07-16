@@ -53,3 +53,11 @@ Thumbs.db
 # deploy secrets (never commit real ones)
 portal.env
 credentials.json
+
+# keys / secrets — never commit
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+*.p12
+secrets/

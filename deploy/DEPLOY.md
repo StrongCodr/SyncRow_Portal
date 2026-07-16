@@ -19,10 +19,11 @@ added later by switching the `--basic-auth` flag in the service unit for the
 
 ## Files in this `deploy/` dir
 
-| File | Installs to | Purpose |
+| File | Runs on | Purpose |
 |---|---|---|
-| `bootstrap.sh` | run as root | First-time setup (packages, user, clone, venv, secrets, systemd, nginx) |
-| `deploy.sh` | run as root | Update: `git pull` + restart |
+| `deploy-from-laptop.sh` | **your laptop** | One-command entrypoint — drives the VPS over SSH (`bootstrap`/`update`/`status`/`logs`) |
+| `bootstrap.sh` | VPS (root) | First-time setup (packages, user, clone, venv, secrets, systemd, nginx) |
+| `deploy.sh` | VPS (root) | Update: `git pull` + restart |
 | `syncrow-portal.service` | `/etc/systemd/system/` | The service unit |
 | `nginx-syncrow.conf` | `/etc/nginx/sites-available/syncrow` | Reverse proxy |
 | `portal.env.example` | `/etc/syncrow/portal.env` | Influx creds, domain, cookie secret (root:600) |
@@ -38,28 +39,29 @@ Secrets live in `/etc/syncrow/` only — **never** committed.
 1. Point a domain's **DNS A record** at `104.152.48.213`.
 2. Open **ports 80 and 443** in the VPS firewall.
 
-**Then, on the VPS:**
-3. Get this repo's deploy key onto GitHub:
+**Then, from your laptop** (inside the repo — the deploy key stays on the VPS,
+never on your laptop or in git):
+3. First run generates + prints the GitHub deploy key, then stops:
    ```bash
-   sudo bash bootstrap.sh          # first run generates + prints the deploy key, then stops
+   ./deploy/deploy-from-laptop.sh bootstrap
    ```
    Add the printed public key at **GitHub → StrongCodr/SyncRow_Portal → Settings →
    Deploy keys** (read-only).
-4. Re-run to clone + build:
+4. Run it again to clone + build:
    ```bash
-   sudo bash bootstrap.sh
+   ./deploy/deploy-from-laptop.sh bootstrap
    ```
-   It writes `/etc/syncrow/portal.env` (with an auto-generated `COOKIE_SECRET`) and
-   `/etc/syncrow/credentials.json` (with an initial `admin` password — **printed once**).
-5. Fill in `/etc/syncrow/portal.env`:
+   This writes `/etc/syncrow/portal.env` (auto-generated `COOKIE_SECRET`) and
+   `/etc/syncrow/credentials.json` (initial `admin` password — **printed once**).
+5. Fill in `/etc/syncrow/portal.env` on the VPS:
    - `INFLUX_TOKEN`, `INFLUX_ORG`, `INFLUX_ORG_ID` — copy from your existing local `.env`
    - `PORTAL_DOMAIN` — your real domain
    - `INFLUX_URL` — leave as `http://localhost:8086` (Influx is local now)
-6. Re-run to install the nginx site + start the service:
+6. Run it once more to install the nginx site + start the service:
    ```bash
-   sudo bash bootstrap.sh
+   ./deploy/deploy-from-laptop.sh bootstrap
    ```
-7. Get the TLS cert (needs DNS + ports live):
+7. Get the TLS cert (needs DNS + ports live), on the VPS:
    ```bash
    sudo certbot --nginx -d your-domain
    ```
@@ -68,12 +70,19 @@ Secrets live in `/etc/syncrow/` only — **never** committed.
 
 Visit `https://your-domain` → basic-auth login → dashboard.
 
+> Default target is `root@104.152.48.213`. Override per-run with
+> `SSH_TARGET=root@host ./deploy/deploy-from-laptop.sh ...`.
+
 ---
 
 ## Updating to a new version
 
+From your laptop, after pushing your changes to git:
+
 ```bash
-sudo bash /opt/syncrow/SyncRow_Portal/deploy/deploy.sh
+./deploy/deploy-from-laptop.sh update     # VPS does git pull + restart
+./deploy/deploy-from-laptop.sh status     # check it came back up
+./deploy/deploy-from-laptop.sh logs       # follow logs
 ```
 
 ## Managing users
