@@ -74,9 +74,11 @@
       document.documentElement.setAttribute('data-theme', saved);
     })();
 
-    // Free charts + map BEFORE HTMX replaces the content, so WebGL/Leaflet
-    // resources don't leak and pile up across interval clicks.
-    document.body.addEventListener('htmx:beforeSwap', function () {
+    // Free charts + map BEFORE HTMX replaces the content, so Leaflet/Plotly
+    // resources don't leak and leave a frozen zombie map across clicks.
+    // Attach to `document` (exists in <head>; htmx events bubble up to it) —
+    // document.body is still null while this <head> script runs.
+    document.addEventListener('htmx:beforeSwap', function () {
       document.querySelectorAll('#content .js-plotly-plot').forEach(function (el) {
         try { Plotly.purge(el); } catch (e) {}
       });
