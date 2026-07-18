@@ -65,8 +65,23 @@ never on your laptop or in git):
    ```bash
    sudo certbot --nginx -d your-domain
    ```
-   certbot edits the nginx site to add `listen 443 ssl` + HTTP→HTTPS redirect and
-   sets up auto-renewal.
+   certbot edits the nginx site to add `listen 443 ssl` + HTTP→HTTPS redirect.
+
+   > ⚠️ **Renewal caveat (learned in production for syncrow.cloud):** the `--nginx`
+   > *renewal* authenticator HANGS with this site, because the catch-all `proxy_pass`
+   > (3600s timeout) + the HTTP→HTTPS redirect swallow the ACME HTTP-01 challenge.
+   > Switch renewal to **webroot** after issuing:
+   > ```bash
+   > mkdir -p /var/www/certbot
+   > # in the port-80 server block, BEFORE the redirect, add:
+   > #   location /.well-known/acme-challenge/ { root /var/www/certbot; }
+   > # then in /etc/letsencrypt/renewal/<domain>.conf set:
+   > #   authenticator = webroot
+   > #   webroot_path = /var/www/certbot,
+   > #   [[webroot_map]]  \n  <domain> = /var/www/certbot
+   > # and add a deploy hook that runs: systemctl reload nginx
+   > sudo certbot renew --dry-run   # must say "all simulated renewals succeeded"
+   > ```
 
 Visit `https://your-domain` → basic-auth login → dashboard.
 
