@@ -135,6 +135,8 @@ systemctl enable syncrow-portal
 DOMAIN="$(grep -E '^PORTAL_DOMAIN=' "$ETC_DIR/portal.env" | cut -d= -f2)"
 if [ -n "$DOMAIN" ] && [ "$DOMAIN" != "portal.example.com" ]; then
     log "Installing nginx site for $DOMAIN"
+    mkdir -p /var/www/certbot                      # webroot for ACME renewal
+    rm -f /etc/nginx/sites-enabled/default         # kill the stock welcome page
     sed "s/PORTAL_DOMAIN/${DOMAIN}/g" "$APP_DIR/deploy/nginx-syncrow.conf" > /etc/nginx/sites-available/syncrow
     ln -sf /etc/nginx/sites-available/syncrow /etc/nginx/sites-enabled/syncrow
     nginx -t && systemctl reload nginx
