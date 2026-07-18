@@ -1,25 +1,26 @@
 {% extends "base.html" %}
 {% block body %}
+<!-- Theme picker — top-right corner -->
+<div class="fixed top-3 right-4 z-50">
+  <select id="theme-select" onchange="applyTheme(this.value)"
+          class="rounded bg-surface text-text border border-border px-2 py-1 text-sm shadow-md
+                 focus:outline-none focus:border-accent">
+    <option value="tokyo-night">Tokyo Night</option>
+    <option value="tokyo-storm">Tokyo Storm</option>
+    <option value="tokyo-day">Tokyo Day</option>
+    <option value="nord">Nord</option>
+    <option value="catppuccin">Catppuccin</option>
+    <option value="dracula">Dracula</option>
+    <option value="solarized">Solarized</option>
+  </select>
+</div>
+
 <div class="flex h-screen">
   <!-- Sidebar -->
   <aside class="w-64 shrink-0 border-r border-border bg-surface p-4 overflow-y-auto flex flex-col gap-5">
     <div class="flex items-center justify-between">
       <h1 class="text-lg font-bold text-text">SyncRow</h1>
       <a href="/logout" class="text-xs text-subtle hover:text-accent" title="{{ user }}">logout</a>
-    </div>
-
-    <div>
-      <label class="block text-[11px] uppercase tracking-wider text-subtle mb-1">Theme</label>
-      <select id="theme-select" onchange="applyTheme(this.value)"
-              class="w-full rounded bg-base text-text border border-border px-2 py-1.5 text-sm focus:outline-none focus:border-accent">
-        <option value="tokyo-night">Tokyo Night</option>
-        <option value="tokyo-storm">Tokyo Storm</option>
-        <option value="tokyo-day">Tokyo Day</option>
-        <option value="nord">Nord</option>
-        <option value="catppuccin">Catppuccin</option>
-        <option value="dracula">Dracula</option>
-        <option value="solarized">Solarized</option>
-      </select>
     </div>
 
     <div class="flex-1 min-h-0 flex flex-col">
