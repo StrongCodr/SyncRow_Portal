@@ -30,6 +30,7 @@ added later by switching the `--basic-auth` flag in the service unit for the
 | `credentials.example.json` | `/etc/syncrow/credentials.json` | Basic-auth users (root:600) |
 
 Secrets live in `/etc/syncrow/` only — **never** committed.
+See [`CREDENTIALS.md`](CREDENTIALS.md) for exactly where each credential is kept on the server.
 
 ---
 

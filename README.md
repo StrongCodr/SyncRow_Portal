@@ -46,6 +46,10 @@ INFLUX_ORG_ID=your-org-id
 INFLUX_BUCKET=syncrow
 ```
 
+> **Production credentials** (dashboard login, Influx token, deploy key, TLS) are
+> kept on the server, not in this repo. See [`deploy/CREDENTIALS.md`](deploy/CREDENTIALS.md)
+> for exactly where each one lives.
+
 ## Data Model
 
 ### IMU Measurement
