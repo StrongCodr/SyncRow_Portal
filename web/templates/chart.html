@@ -1,14 +1,57 @@
-<div>
-  <div class="flex items-baseline gap-2 mb-3">
+<div class="space-y-6 max-w-6xl">
+  <div class="flex items-baseline gap-2">
     <h3 class="text-lg font-semibold text-text">{{ value }}</h3>
-    <span class="text-sm text-subtle">{{ n }} points · {{ field }}</span>
+    <span class="text-sm text-subtle">{{ n }} points</span>
   </div>
-  <div id="chart" class="w-full rounded border border-border bg-surface/40" style="height:460px;"></div>
+
+  <section>
+    <h4 class="text-sm font-medium text-subtle mb-1">Synchronicity</h4>
+    <div id="chart-sync" style="height:240px;"></div>
+  </section>
+
+  <section>
+    <h4 class="text-sm font-medium text-subtle mb-1">Boat speed</h4>
+    <div id="chart-speed" style="height:200px;"></div>
+  </section>
+
+  <section>
+    <h4 class="text-sm font-medium text-subtle mb-1">Gyro magnitude (per sensor)</h4>
+    <div id="chart-imu" style="height:300px;"></div>
+  </section>
+
+  <section>
+    <h4 class="text-sm font-medium text-subtle mb-1">GPS track</h4>
+    <div id="map" style="height:360px;" class="rounded border border-border overflow-hidden"></div>
+  </section>
+
   <script>
     (function () {
-      var fig = {{ fig_json | safe }};
-      Plotly.newPlot('chart', fig.data, fig.layout, {responsive: true, displaylogo: false});
-      if (window.restyleCharts) restyleCharts();  // paint with the active theme
+      function plot(id, spec) {
+        var el = document.getElementById(id);
+        if (spec) {
+          Plotly.newPlot(id, spec.data, spec.layout, {responsive: true, displaylogo: false});
+        } else {
+          el.innerHTML = '<div class="text-subtle text-sm p-3">no data</div>';
+        }
+      }
+      plot('chart-sync',  {{ sync_json  | safe }});
+      plot('chart-speed', {{ speed_json | safe }});
+      plot('chart-imu',   {{ imu_json   | safe }});
+      if (window.restyleCharts) restyleCharts();
+
+      var track = {{ track_json | safe }};
+      var mapEl = document.getElementById('map');
+      if (track && window.L) {
+        var map = L.map('map', {scrollWheelZoom: true});
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19, attribution: '© OpenStreetMap'
+        }).addTo(map);
+        var line = L.polyline(track.points, {color: '#7aa2f7', weight: 3}).addTo(map);
+        map.fitBounds(line.getBounds(), {padding: [20, 20]});
+        setTimeout(function () { map.invalidateSize(); }, 50);  // fragment just swapped in
+      } else {
+        mapEl.innerHTML = '<div class="text-subtle text-sm p-3">no GPS track for this interval</div>';
+      }
     })();
   </script>
 </div>

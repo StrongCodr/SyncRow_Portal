@@ -15,18 +15,19 @@ import json
 import os
 from pathlib import Path
 
-import numpy as np
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
 from srow.config import load_settings
-from srow.services import InfluxService
+from srow.services import InfluxService, LocationService
+from web import charts
 
 BASE_DIR = Path(__file__).parent
 settings = load_settings()
 influx = InfluxService(settings)
+location = LocationService(settings)
 
 # Session secret: reuse COOKIE_SECRET from the env if present.
 SESSION_SECRET = (
@@ -55,11 +56,6 @@ app.add_middleware(
 )
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 templates.env.cache = None  # jinja2 LRU cache trips on Python 3.14; harmless to disable
-
-PALETTE = [
-    "#7aa2f7", "#bb9af7", "#7dcfff", "#9ece6a",
-    "#e0af68", "#f7768e", "#2ac3de", "#ff9e64",
-]
 
 
 def _user(request: Request) -> str | None:
@@ -109,41 +105,6 @@ def index(request: Request):
     )
 
 
-def _build_fig(df):
-    if df is None or df.empty:
-        return None, None
-    field = None
-    if all(c in df.columns for c in ("wx", "wy", "wz")):
-        df = df.copy()
-        df["gyro_mag"] = np.sqrt(df["wx"] ** 2 + df["wy"] ** 2 + df["wz"] ** 2)
-        field = "gyro_mag"
-    else:
-        for c in ("pitch", "roll", "yaw", "az"):
-            if c in df.columns:
-                field = c
-                break
-    if field is None:
-        return None, None
-
-    data = []
-    for i, (src, g) in enumerate(df.groupby("source")):
-        g = g.sort_values("time")
-        data.append({
-            "type": "scattergl", "mode": "lines", "name": str(src),
-            "x": [t.isoformat() for t in g["time"]],
-            "y": [None if v != v else float(v) for v in g[field]],
-            "line": {"width": 1.3, "color": PALETTE[i % len(PALETTE)]},
-        })
-    layout = {
-        "margin": {"l": 55, "r": 20, "t": 10, "b": 40},
-        "paper_bgcolor": "rgba(0,0,0,0)", "plot_bgcolor": "rgba(0,0,0,0)",
-        "xaxis": {"title": "time"}, "yaxis": {"title": field},
-        "legend": {"orientation": "h", "y": 1.12}, "hovermode": "x unified",
-        "height": 460,
-    }
-    return {"data": data, "layout": layout}, field
-
-
 @app.get("/interval", response_class=HTMLResponse)
 def interval(request: Request, tag: str, value: str):
     if not _user(request):
@@ -155,13 +116,24 @@ def interval(request: Request, tag: str, value: str):
     except Exception as e:  # pragma: no cover
         return HTMLResponse(f'<div class="text-red-400 text-sm">Query failed: {e}</div>')
 
-    fig, field = _build_fig(df)
-    if fig is None:
-        return HTMLResponse('<div class="text-subtle">No plottable data for this interval.</div>')
+    try:
+        gdf = location.load_track(tag_name=tag, interval_value=value)
+    except Exception:
+        gdf = None
+
+    if (df is None or df.empty) and (gdf is None or len(gdf) == 0):
+        return HTMLResponse('<div class="text-subtle">No data for this interval.</div>')
 
     return templates.TemplateResponse(
         request=request, name="chart.html",
-        context={"fig_json": json.dumps(fig), "value": value, "n": len(df), "field": field},
+        context={
+            "value": value,
+            "n": len(df) if df is not None else 0,
+            "sync_json": json.dumps(charts.sync_fig(df)),
+            "speed_json": json.dumps(charts.speed_fig(gdf)),
+            "imu_json": json.dumps(charts.imu_fig(df)),
+            "track_json": json.dumps(charts.track_data(gdf)),
+        },
     )
 
 
