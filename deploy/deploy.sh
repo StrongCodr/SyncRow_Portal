@@ -27,7 +27,7 @@ else
     # Reinstall deps only if pyproject changed.
     if sudo -u "$APP_USER" git -C "$APP_DIR" diff --name-only "$BEFORE" "$AFTER" | grep -q "pyproject.toml"; then
         log "pyproject.toml changed — reinstalling dependencies"
-        sudo -u "$APP_USER" "$APP_DIR/.venv/bin/pip" install -q -e "$APP_DIR"
+        sudo -u "$APP_USER" "$APP_DIR/.venv/bin/pip" install -q -e "$APP_DIR[web]"
     fi
 fi
 

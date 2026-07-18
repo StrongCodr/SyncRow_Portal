@@ -5,21 +5,11 @@ description = "High-performance rowing data visualization and synchronization an
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    # Panel ecosystem
-    "panel>=1.3.0",
-    "holoviews>=1.18.0",
-    "hvplot>=0.9.0",
-    "datashader>=0.16.0",
-    "bokeh>=3.3.0",
-
-    # Geospatial
-    "geoviews>=1.11.0",
-    "geopandas>=0.14.0",
-
     # Data handling
     "pandas>=2.1.0",
     "numpy>=1.26.0",
     "pyarrow>=14.0.0",  # For Parquet local cache
+    "geopandas>=0.14.0",  # GPS track handling
 
     # InfluxDB
     "influxdb-client>=1.38.0",
@@ -38,13 +28,23 @@ dev = [
     "pytest-cov>=4.1.0",
     "ruff>=0.1.0",
 ]
-# FastAPI + HTMX + Tailwind + Plotly frontend (see web/). Charts are Plotly
-# (client-side WebGL); no Panel/Bokeh needed to run this.
+# FastAPI + HTMX + Tailwind + Plotly frontend (see web/). This is the current
+# production UI. Charts are Plotly (client-side WebGL); no Panel/Bokeh needed.
 web = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
     "jinja2>=3.1",
     "python-multipart>=0.0.9",
+]
+# RETIRED Panel/HoloViz UI (app.py, srow/components, srow/state). Kept for
+# reference / porting the sync + speed charts; not installed in production.
+panel = [
+    "panel>=1.3.0",
+    "holoviews>=1.18.0",
+    "hvplot>=0.9.0",
+    "datashader>=0.16.0",
+    "bokeh>=3.3.0",
+    "geoviews>=1.11.0",
 ]
 
 [build-system]

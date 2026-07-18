@@ -96,7 +96,7 @@ if [ ! -d "$APP_DIR/.venv" ]; then
     sudo -u "$APP_USER" "$PYTHON_BIN" -m venv "$APP_DIR/.venv"
 fi
 sudo -u "$APP_USER" "$APP_DIR/.venv/bin/pip" install -q --upgrade pip
-sudo -u "$APP_USER" "$APP_DIR/.venv/bin/pip" install -q -e "$APP_DIR"
+sudo -u "$APP_USER" "$APP_DIR/.venv/bin/pip" install -q -e "$APP_DIR[web]"
 sudo -u "$APP_USER" mkdir -p "$APP_DIR/.cache"
 
 # ─── 6. Secrets + config (/etc/syncrow) ──────────────────────────────────────
