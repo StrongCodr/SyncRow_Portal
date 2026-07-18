@@ -21,16 +21,26 @@ APP_HOME="/opt/syncrow"
 APP_DIR="${APP_HOME}/SyncRow_Portal"
 REPO_URL="git@github.com:StrongCodr/SyncRow_Portal.git"
 ETC_DIR="/etc/syncrow"
-SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # deploy/ inside a checkout, if run from one
+# App requires Python >= 3.11 (Ubuntu 22.04 ships 3.10, so we install 3.11).
+PYTHON_BIN="${PYTHON_BIN:-python3.11}"
 
 log() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 
 [ "$(id -u)" -eq 0 ] || { echo "Run as root."; exit 1; }
 
 # ─── 1. Packages ─────────────────────────────────────────────────────────────
-log "Installing packages (nginx, certbot, python venv, git)"
+log "Installing packages (nginx, certbot, git)"
 apt-get update -qq
-apt-get install -y -qq nginx certbot python3-certbot-nginx python3-venv python3-pip git openssl
+apt-get install -y -qq nginx certbot python3-certbot-nginx git openssl software-properties-common
+
+# The app requires Python >= 3.11; Ubuntu 22.04 only ships 3.10. Pull a stable
+# 3.11 from the deadsnakes PPA (the default-repo 3.11 is an rc build).
+if ! command -v "$PYTHON_BIN" >/dev/null; then
+    log "Installing $PYTHON_BIN (deadsnakes PPA)"
+    add-apt-repository -y ppa:deadsnakes/ppa
+    apt-get update -qq
+    apt-get install -y -qq "$PYTHON_BIN" "${PYTHON_BIN}-venv" "${PYTHON_BIN}-dev"
+fi
 
 # ─── 2. Service user + dirs ──────────────────────────────────────────────────
 if ! id "$APP_USER" &>/dev/null; then
@@ -73,9 +83,17 @@ if [ ! -d "$APP_DIR/.git" ]; then
 fi
 
 # ─── 5. Python venv + deps ───────────────────────────────────────────────────
-log "Building virtualenv + installing dependencies"
+log "Building virtualenv ($PYTHON_BIN) + installing dependencies"
+# Self-heal: if a venv exists but is older than 3.11, rebuild it.
+if [ -d "$APP_DIR/.venv" ]; then
+    VENV_OK="$("$APP_DIR/.venv/bin/python" -c 'import sys; print(sys.version_info[:2] >= (3, 11))' 2>/dev/null || echo False)"
+    if [ "$VENV_OK" != "True" ]; then
+        log "Existing venv is too old — recreating with $PYTHON_BIN"
+        rm -rf "$APP_DIR/.venv"
+    fi
+fi
 if [ ! -d "$APP_DIR/.venv" ]; then
-    sudo -u "$APP_USER" python3 -m venv "$APP_DIR/.venv"
+    sudo -u "$APP_USER" "$PYTHON_BIN" -m venv "$APP_DIR/.venv"
 fi
 sudo -u "$APP_USER" "$APP_DIR/.venv/bin/pip" install -q --upgrade pip
 sudo -u "$APP_USER" "$APP_DIR/.venv/bin/pip" install -q -e "$APP_DIR"
