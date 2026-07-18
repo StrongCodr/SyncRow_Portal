@@ -74,18 +74,22 @@
       document.documentElement.setAttribute('data-theme', saved);
     })();
 
-    // Free charts + map BEFORE HTMX replaces the content, so Leaflet/Plotly
-    // resources don't leak and leave a frozen zombie map across clicks.
-    // Attach to `document` (exists in <head>; htmx events bubble up to it) —
-    // document.body is still null while this <head> script runs.
-    document.addEventListener('htmx:beforeSwap', function () {
-      document.querySelectorAll('#content .js-plotly-plot').forEach(function (el) {
+    // When an interval is requested: immediately free the old charts + map
+    // (their DOM still exists at this point) and show a Loading placeholder,
+    // so the "select an interval" message is replaced instantly — not when the
+    // response finally lands. Attach to `document` (exists in <head>; htmx
+    // events bubble to it) — document.body is still null while <head> runs.
+    document.addEventListener('htmx:beforeRequest', function (e) {
+      var t = e.detail && e.detail.target;
+      if (!t || t.id !== 'content') return;
+      t.querySelectorAll('.js-plotly-plot').forEach(function (el) {
         try { Plotly.purge(el); } catch (e) {}
       });
       if (window._srowMap) {
         try { window._srowMap.remove(); } catch (e) {}
         window._srowMap = null;
       }
+      t.innerHTML = '<div class="text-subtle text-sm">Loading…</div>';
     });
   </script>
 </head>

@@ -36,7 +36,7 @@
           <button class="w-full text-left px-2 py-1.5 rounded text-sm text-text border border-transparent
                          hover:bg-base hover:border-border transition"
                   hx-get="/interval?tag={{ iv.tag|urlencode }}&value={{ iv.value|urlencode }}"
-                  hx-target="#content" hx-indicator="#spinner">
+                  hx-target="#content">
             {{ iv.label }}
           </button>
         </li>
@@ -47,10 +47,7 @@
 
   <!-- Main -->
   <main class="flex-1 min-w-0 p-6 overflow-auto">
-    <div class="flex items-center gap-3 mb-5">
-      <h2 class="text-xl font-semibold text-text">Data Explorer</h2>
-      <span id="spinner" class="htmx-indicator text-subtle text-sm">loading…</span>
-    </div>
+    <h2 class="text-xl font-semibold text-text mb-5">Data Explorer</h2>
     <div id="content" class="text-subtle">Select an interval to visualize →</div>
   </main>
 </div>
