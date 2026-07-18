@@ -35,6 +35,7 @@ web = [
     "uvicorn[standard]>=0.29",
     "jinja2>=3.1",
     "python-multipart>=0.0.9",
+    "itsdangerous>=2.1",
 ]
 # RETIRED Panel/HoloViz UI (app.py, srow/components, srow/state). Kept for
 # reference / porting the sync + speed charts; not installed in production.

@@ -3,7 +3,10 @@
 <div class="flex h-screen">
   <!-- Sidebar -->
   <aside class="w-64 shrink-0 border-r border-border bg-surface p-4 overflow-y-auto flex flex-col gap-5">
-    <h1 class="text-lg font-bold text-text">SyncRow</h1>
+    <div class="flex items-center justify-between">
+      <h1 class="text-lg font-bold text-text">SyncRow</h1>
+      <a href="/logout" class="text-xs text-subtle hover:text-accent" title="{{ user }}">logout</a>
+    </div>
 
     <div>
       <label class="block text-[11px] uppercase tracking-wider text-subtle mb-1">Theme</label>

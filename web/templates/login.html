@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="min-h-screen flex items-center justify-center p-4">
+  <div class="w-full max-w-sm bg-surface border border-border rounded-xl p-8 shadow-lg">
+    <h1 class="text-2xl font-bold text-text">SyncRow</h1>
+    <p class="text-subtle text-sm mb-6">Sign in to the data explorer</p>
+
+    {% if error %}
+      <div class="mb-4 rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-400">
+        {{ error }}
+      </div>
+    {% endif %}
+
+    <form method="post" action="/login" class="space-y-4">
+      <div>
+        <label class="block text-[11px] uppercase tracking-wider text-subtle mb-1">Username</label>
+        <input name="username" autocomplete="username" required autofocus
+               class="w-full rounded bg-base text-text border border-border px-3 py-2
+                      focus:outline-none focus:border-accent">
+      </div>
+      <div>
+        <label class="block text-[11px] uppercase tracking-wider text-subtle mb-1">Password</label>
+        <input name="password" type="password" autocomplete="current-password" required
+               class="w-full rounded bg-base text-text border border-border px-3 py-2
+                      focus:outline-none focus:border-accent">
+      </div>
+      <button type="submit"
+              class="w-full rounded bg-accent text-base font-semibold py-2 hover:opacity-90 transition">
+        Sign in
+      </button>
+    </form>
+
+    <div class="mt-6">
+      <label class="block text-[11px] uppercase tracking-wider text-subtle mb-1">Theme</label>
+      <select id="theme-select" onchange="applyTheme(this.value)"
+              class="w-full rounded bg-base text-text border border-border px-2 py-1 text-sm
+                     focus:outline-none focus:border-accent">
+        <option value="tokyo-night">Tokyo Night</option>
+        <option value="tokyo-storm">Tokyo Storm</option>
+        <option value="tokyo-day">Tokyo Day</option>
+        <option value="nord">Nord</option>
+        <option value="catppuccin">Catppuccin</option>
+        <option value="dracula">Dracula</option>
+        <option value="solarized">Solarized</option>
+      </select>
+    </div>
+  </div>
+</div>
+
+<script>
+  (function () {
+    var sel = document.getElementById('theme-select');
+    try { sel.value = localStorage.getItem('srow-theme') || 'tokyo-night'; } catch (e) {}
+  })();
+</script>
+{% endblock %}
