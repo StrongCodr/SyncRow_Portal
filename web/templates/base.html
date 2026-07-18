@@ -73,6 +73,18 @@
       try { saved = localStorage.getItem(SROW_THEME_KEY) || saved; } catch (e) {}
       document.documentElement.setAttribute('data-theme', saved);
     })();
+
+    // Free charts + map BEFORE HTMX replaces the content, so WebGL/Leaflet
+    // resources don't leak and pile up across interval clicks.
+    document.body.addEventListener('htmx:beforeSwap', function () {
+      document.querySelectorAll('#content .js-plotly-plot').forEach(function (el) {
+        try { Plotly.purge(el); } catch (e) {}
+      });
+      if (window._srowMap) {
+        try { window._srowMap.remove(); } catch (e) {}
+        window._srowMap = null;
+      }
+    });
   </script>
 </head>
 <body class="bg-base text-text min-h-screen antialiased">

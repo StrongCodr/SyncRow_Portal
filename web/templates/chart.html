@@ -41,14 +41,19 @@
 
       var track = {{ track_json | safe }};
       var mapEl = document.getElementById('map');
+      // Clean up any previous map instance before creating a new one.
+      if (window._srowMap) { try { window._srowMap.remove(); } catch (e) {} window._srowMap = null; }
       if (track && window.L) {
         var map = L.map('map', {scrollWheelZoom: true});
+        window._srowMap = map;
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
           maxZoom: 19, attribution: '© OpenStreetMap'
         }).addTo(map);
         var line = L.polyline(track.points, {color: '#7aa2f7', weight: 3}).addTo(map);
         map.fitBounds(line.getBounds(), {padding: [20, 20]});
-        setTimeout(function () { map.invalidateSize(); }, 50);  // fragment just swapped in
+        // The fragment was just swapped in; size it once layout settles.
+        requestAnimationFrame(function () { map.invalidateSize(); });
+        setTimeout(function () { map.invalidateSize(); }, 200);
       } else {
         mapEl.innerHTML = '<div class="text-subtle text-sm p-3">no GPS track for this interval</div>';
       }

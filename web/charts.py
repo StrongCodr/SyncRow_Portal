@@ -54,7 +54,7 @@ def imu_fig(df: pd.DataFrame | None):
     for i, (src, g) in enumerate(d.groupby("source")):
         g = g.sort_values("time")
         data.append({
-            "type": "scattergl", "mode": "lines", "name": str(src),
+            "type": "scatter", "mode": "lines", "name": str(src),
             "x": _times(g["time"]), "y": _clean(g[field]),
             "line": {"width": 1.2, "color": PALETTE[i % len(PALETTE)]},
         })
@@ -77,7 +77,7 @@ def sync_fig(df: pd.DataFrame | None):
     spread = normalized.std(axis=1)
     score = 1.0 / (1.0 + spread)
     data = [{
-        "type": "scattergl", "mode": "lines", "name": "sync",
+        "type": "scatter", "mode": "lines", "name": "sync",
         "x": _times(score.index), "y": _clean(score.values),
         "line": {"width": 1.6, "color": "#9ece6a"},
         "fill": "tozeroy", "fillcolor": "rgba(158,206,106,0.12)",
@@ -99,7 +99,7 @@ def speed_fig(gdf) -> dict | None:
     if len(speed) == 0:
         return None
     data = [{
-        "type": "scattergl", "mode": "lines", "name": "speed",
+        "type": "scatter", "mode": "lines", "name": "speed",
         "x": _times(t), "y": _clean(speed),
         "line": {"width": 1.5, "color": "#2ac3de"},
     }]
