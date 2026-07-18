@@ -124,7 +124,7 @@ schema.tagValues(
 
         flux = f'''
 from(bucket: "{safe_bucket}")
-  |> range(start: -30d)
+  |> range(start: {self.settings.query_lookback})
   |> filter(fn: (r) => r._measurement == "{self.MEASUREMENT}")
   |> filter(fn: (r) => r["{safe_tag}"] == "{safe_value}")
   {device_filter}
@@ -256,7 +256,7 @@ from(bucket: "{safe_bucket}")
 
         flux_first = f'''
 from(bucket: "{safe_bucket}")
-  |> range(start: -30d)
+  |> range(start: {self.settings.query_lookback})
   |> filter(fn: (r) => r._measurement == "{self.MEASUREMENT}")
   |> filter(fn: (r) => r["{safe_tag}"] == "{safe_value}")
   |> keep(columns: ["_time"])
@@ -264,7 +264,7 @@ from(bucket: "{safe_bucket}")
 '''
         flux_last = f'''
 from(bucket: "{safe_bucket}")
-  |> range(start: -30d)
+  |> range(start: {self.settings.query_lookback})
   |> filter(fn: (r) => r._measurement == "{self.MEASUREMENT}")
   |> filter(fn: (r) => r["{safe_tag}"] == "{safe_value}")
   |> keep(columns: ["_time"])

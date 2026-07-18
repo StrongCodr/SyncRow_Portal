@@ -46,6 +46,9 @@ class Settings:
     bucket: str
     cache_enabled: bool = True
     cache_dir: Path = DEFAULT_CACHE_DIR
+    # How far back interval list/load queries look. Data is often months old,
+    # so the default is generous; override with INFLUX_LOOKBACK (Flux duration).
+    query_lookback: str = "-3650d"
 
     def effective_org(self) -> str:
         """Return the organization identifier to use for API calls.
@@ -85,6 +88,8 @@ def load_settings(env_path: str = ".env") -> Settings:
     else:
         cache_dir = DEFAULT_CACHE_DIR
 
+    query_lookback = os.getenv("INFLUX_LOOKBACK", "-3650d")
+
     # Validate required fields
     missing = []
     if not url:
@@ -111,4 +116,5 @@ def load_settings(env_path: str = ".env") -> Settings:
         bucket=bucket,
         cache_enabled=cache_enabled,
         cache_dir=cache_dir,
+        query_lookback=query_lookback,
     )

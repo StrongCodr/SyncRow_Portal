@@ -157,7 +157,7 @@ class InfluxService:
         for tag in tag_keys:
             flux = f'''
 import "influxdata/influxdb/schema"
-schema.tagValues(bucket: "{_escape_flux_string(self.settings.bucket)}", tag: "{tag}")
+schema.tagValues(bucket: "{_escape_flux_string(self.settings.bucket)}", tag: "{tag}", start: {self.settings.query_lookback})
 '''
             tables = self.query_api().query(flux, org=self.settings.effective_org())
             for table in tables:
@@ -205,7 +205,7 @@ schema.tagValues(bucket: "{_escape_flux_string(self.settings.bucket)}", tag: "{t
 
         flux = f'''
 from(bucket: "{safe_bucket}")
-  |> range(start: -30d)
+  |> range(start: {self.settings.query_lookback})
   |> filter(fn: (r) => r._measurement == "{safe_measurement}")
   |> filter(fn: (r) => r["{safe_tag}"] == "{safe_value}")
   |> sort(columns: ["_time"])
@@ -265,7 +265,7 @@ from(bucket: "{safe_bucket}")
 
         flux = f'''
 from(bucket: "{safe_bucket}")
-  |> range(start: -30d)
+  |> range(start: {self.settings.query_lookback})
   |> filter(fn: (r) => r._measurement == "{safe_measurement}")
   |> filter(fn: (r) => r["{safe_tag}"] == "{safe_value}")
   |> aggregateWindow(every: {window}, fn: {aggregation}, createEmpty: false)
@@ -319,7 +319,7 @@ from(bucket: "{safe_bucket}")
 
         flux = f'''
 from(bucket: "{safe_bucket}")
-  |> range(start: -30d)
+  |> range(start: {self.settings.query_lookback})
   |> filter(fn: (r) => r._measurement == "{safe_measurement}")
   |> filter(fn: (r) => r["{safe_tag}"] == "{safe_value}")
   |> keep(columns: ["_time"])
@@ -329,7 +329,7 @@ from(bucket: "{safe_bucket}")
 
         flux_last = f'''
 from(bucket: "{safe_bucket}")
-  |> range(start: -30d)
+  |> range(start: {self.settings.query_lookback})
   |> filter(fn: (r) => r._measurement == "{safe_measurement}")
   |> filter(fn: (r) => r["{safe_tag}"] == "{safe_value}")
   |> keep(columns: ["_time"])
