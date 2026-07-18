@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="flex h-screen">
+  <!-- Sidebar -->
+  <aside class="w-64 shrink-0 border-r border-border bg-surface p-4 overflow-y-auto flex flex-col gap-5">
+    <h1 class="text-lg font-bold text-text">SyncRow</h1>
+
+    <div>
+      <label class="block text-[11px] uppercase tracking-wider text-subtle mb-1">Theme</label>
+      <select id="theme-select" onchange="applyTheme(this.value)"
+              class="w-full rounded bg-base text-text border border-border px-2 py-1.5 text-sm focus:outline-none focus:border-accent">
+        <option value="tokyo-night">Tokyo Night</option>
+        <option value="tokyo-storm">Tokyo Storm</option>
+        <option value="tokyo-day">Tokyo Day</option>
+        <option value="nord">Nord</option>
+        <option value="catppuccin">Catppuccin</option>
+        <option value="dracula">Dracula</option>
+        <option value="solarized">Solarized</option>
+      </select>
+    </div>
+
+    <div class="flex-1 min-h-0 flex flex-col">
+      <div class="text-[11px] uppercase tracking-wider text-subtle mb-2">
+        Intervals ({{ intervals|length }})
+      </div>
+      {% if error %}
+        <div class="text-red-400 text-xs">{{ error }}</div>
+      {% endif %}
+      <ul class="space-y-1 overflow-y-auto">
+        {% for iv in intervals %}
+        <li>
+          <button class="w-full text-left px-2 py-1.5 rounded text-sm text-text border border-transparent
+                         hover:bg-base hover:border-border transition"
+                  hx-get="/interval?tag={{ iv.tag|urlencode }}&value={{ iv.value|urlencode }}"
+                  hx-target="#content" hx-indicator="#spinner">
+            {{ iv.label }}
+          </button>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="flex-1 min-w-0 p-6 overflow-auto">
+    <div class="flex items-center gap-3 mb-5">
+      <h2 class="text-xl font-semibold text-text">Data Explorer</h2>
+      <span id="spinner" class="htmx-indicator text-subtle text-sm">loading…</span>
+    </div>
+    <div id="content" class="text-subtle">Select an interval to visualize →</div>
+  </main>
+</div>
+
+<script>
+  // Reflect the saved theme in the picker.
+  (function () {
+    var sel = document.getElementById('theme-select');
+    try { sel.value = localStorage.getItem('srow-theme') || 'tokyo-night'; } catch (e) {}
+  })();
+</script>
+{% endblock %}

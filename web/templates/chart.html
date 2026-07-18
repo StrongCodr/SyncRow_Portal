@@ -1,0 +1,14 @@
+<div>
+  <div class="flex items-baseline gap-2 mb-3">
+    <h3 class="text-lg font-semibold text-text">{{ value }}</h3>
+    <span class="text-sm text-subtle">{{ n }} points · {{ field }}</span>
+  </div>
+  <div id="chart" class="w-full rounded border border-border bg-surface/40" style="height:460px;"></div>
+  <script>
+    (function () {
+      var fig = {{ fig_json | safe }};
+      Plotly.newPlot('chart', fig.data, fig.layout, {responsive: true, displaylogo: false});
+      if (window.restyleCharts) restyleCharts();  // paint with the active theme
+    })();
+  </script>
+</div>

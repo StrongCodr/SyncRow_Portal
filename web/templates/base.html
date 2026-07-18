@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en" data-theme="tokyo-night">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SyncRow</title>
+
+  <!-- Tailwind (Play CDN for dev; swap for the CLI build in prod) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: { extend: { colors: {
+        base:    'var(--base)',
+        surface: 'var(--surface)',
+        text:    'var(--text)',
+        subtle:  'var(--subtle)',
+        accent:  'var(--accent)',
+        border:  'var(--border)',
+      }}}
+    }
+  </script>
+
+  <!-- Theme palettes: switching data-theme swaps every CSS var -> instant retheme -->
+  <style>
+    :root, [data-theme="tokyo-night"] { --base:#1a1b26; --surface:#24283b; --text:#c0caf5; --subtle:#565f89; --accent:#7aa2f7; --border:#292e42; }
+    [data-theme="tokyo-storm"]        { --base:#24283b; --surface:#1f2335; --text:#c0caf5; --subtle:#565f89; --accent:#7aa2f7; --border:#3b4261; }
+    [data-theme="tokyo-day"]          { --base:#e1e2e7; --surface:#d5d6db; --text:#3760bf; --subtle:#7a88b8; --accent:#2e7de9; --border:#b7c1e3; }
+    [data-theme="nord"]               { --base:#2e3440; --surface:#3b4252; --text:#eceff4; --subtle:#7b88a1; --accent:#88c0d0; --border:#434c5e; }
+    [data-theme="catppuccin"]         { --base:#1e1e2e; --surface:#313244; --text:#cdd6f4; --subtle:#9399b2; --accent:#89b4fa; --border:#313244; }
+    [data-theme="dracula"]            { --base:#282a36; --surface:#44475a; --text:#f8f8f2; --subtle:#6272a4; --accent:#bd93f9; --border:#44475a; }
+    [data-theme="solarized"]          { --base:#002b36; --surface:#073642; --text:#93a1a1; --subtle:#586e75; --accent:#268bd2; --border:#094a5a; }
+    html, body { background: var(--base); }
+    .htmx-indicator { opacity: 0; transition: opacity .2s; }
+    .htmx-request .htmx-indicator, .htmx-request.htmx-indicator { opacity: 1; }
+  </style>
+
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+
+  <script>
+    const SROW_THEME_KEY = 'srow-theme';
+    function _cssvar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+
+    // Re-color every rendered Plotly chart from the current theme — client-side, no refetch.
+    function restyleCharts() {
+      if (!window.Plotly) return;
+      const lay = {
+        'paper_bgcolor': 'rgba(0,0,0,0)',
+        'plot_bgcolor':  'rgba(0,0,0,0)',
+        'font.color':    _cssvar('--text'),
+        'xaxis.gridcolor': _cssvar('--border'),
+        'yaxis.gridcolor': _cssvar('--border'),
+        'xaxis.color':   _cssvar('--subtle'),
+        'yaxis.color':   _cssvar('--subtle'),
+        'legend.font.color': _cssvar('--text'),
+      };
+      document.querySelectorAll('.js-plotly-plot').forEach(function (gd) {
+        try { Plotly.relayout(gd, lay); } catch (e) {}
+      });
+    }
+
+    function applyTheme(t) {
+      document.documentElement.setAttribute('data-theme', t);
+      try { localStorage.setItem(SROW_THEME_KEY, t); } catch (e) {}
+      restyleCharts();
+    }
+
+    // Apply saved theme as early as possible.
+    (function () {
+      var saved = 'tokyo-night';
+      try { saved = localStorage.getItem(SROW_THEME_KEY) || saved; } catch (e) {}
+      document.documentElement.setAttribute('data-theme', saved);
+    })();
+  </script>
+</head>
+<body class="bg-base text-text min-h-screen antialiased">
+  {% block body %}{% endblock %}
+</body>
+</html>
