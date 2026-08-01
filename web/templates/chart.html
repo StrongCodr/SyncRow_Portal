@@ -26,10 +26,12 @@
 
   <script>
     (function () {
+      var plotted = [];
       function plot(id, spec) {
         var el = document.getElementById(id);
         if (spec) {
           Plotly.newPlot(id, spec.data, spec.layout, {responsive: true, displaylogo: false});
+          plotted.push(id);
         } else {
           el.innerHTML = '<div class="text-subtle text-sm p-3">no data</div>';
         }
@@ -38,6 +40,27 @@
       plot('chart-speed', {{ speed_json | safe }});
       plot('chart-imu',   {{ imu_json   | safe }});
       if (window.restyleCharts) restyleCharts();
+
+      // Linked zoom: pan/zoom the time axis on any chart -> the others follow.
+      var syncing = false;
+      plotted.forEach(function (id) {
+        document.getElementById(id).on('plotly_relayout', function (ev) {
+          if (syncing) return;
+          var update;
+          if (ev['xaxis.range[0]'] !== undefined) {
+            update = {'xaxis.range': [ev['xaxis.range[0]'], ev['xaxis.range[1]']]};
+          } else if (ev['xaxis.autorange']) {
+            update = {'xaxis.autorange': true};
+          } else {
+            return;  // y-only zoom or other change — don't propagate
+          }
+          syncing = true;
+          plotted.forEach(function (other) {
+            if (other !== id) { try { Plotly.relayout(other, update); } catch (e) {} }
+          });
+          syncing = false;
+        });
+      });
 
       var track = {{ track_json | safe }};
       var mapEl = document.getElementById('map');
