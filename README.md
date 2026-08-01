@@ -1,38 +1,38 @@
-# SyncRow Data Explorer
+# SyncRow Portal
 
-High-performance data visualization for rowing IMU and GPS sensor data. Built with Panel + Datashader to handle millions of data points smoothly.
+Web dashboard and analysis tools for rowing IMU and GPS sensor data. The portal
+(FastAPI + HTMX + Plotly) visualizes recorded intervals — crew synchronicity,
+boat speed, and GPS track — from data uploaded to InfluxDB by the SyncRow
+Android app. Live at https://syncrow.cloud.
 
-## Features
+## Components
 
-- **Time Series Visualization**: Interactive plots with Datashader for smooth rendering of 1M+ points
-- **GPS Track Maps**: View boat paths on interactive maps with GeoViews
-- **Data Tables**: Virtual-scrolling tables for exploring raw sensor data
-- **Filtering**: Filter by sensor source, fields, and time ranges
-- **InfluxDB Integration**: Direct queries to InfluxDB time-series database
+- **`web/`** — production dashboard: FastAPI + HTMX + Tailwind + Plotly.
+  Session-cookie login, interval picker, sync/speed/IMU charts, GPS map.
+  Server builds Plotly figure specs as JSON; the browser handles zoom/pan/theme.
+- **`srow/`** — framework-agnostic data layer: InfluxDB queries
+  (`srow/services/influx_service.py`), GPS tracks (`location_service.py`),
+  local Parquet cache (`cache_service.py`), settings (`srow/config/`).
+- **`analyze_async.py`** — offline research CLI: per-stroke catch detection,
+  cross-sensor asynchronicity (ms), and empirical speed-loss analysis.
+- **`deploy/`** — native (no-Docker) VPS deployment: nginx + uvicorn + systemd.
+  See [`deploy/DEPLOY.md`](deploy/DEPLOY.md).
 
 ## Quick Start
-
-```bash
-# Clone and enter directory
-cd srow
-
-# Run the app (creates venv, installs deps, launches)
-./start.sh
-```
-
-Or manually:
 
 ```bash
 # Create virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
 
-# Install dependencies
-pip install -e ".[dev]"
+# Install dependencies (web extra = FastAPI/uvicorn/Jinja2)
+pip install -e ".[web,dev]"
 
-# Run the app
-panel serve app.py --show --autoreload
+# Run the dashboard
+uvicorn web.main:app --reload --port 5006
 ```
+
+Then open http://localhost:5006 (dev login `admin`/`admin` unless `SROW_USERS` is set).
 
 ## Configuration
 
@@ -45,6 +45,9 @@ INFLUX_ORG=YourOrg
 INFLUX_ORG_ID=your-org-id
 INFLUX_BUCKET=syncrow
 ```
+
+The web app additionally reads `SESSION_SECRET` and `SROW_USERS`
+(`user:password` pairs, comma-separated).
 
 > **Production credentials** (dashboard login, Influx token, deploy key, TLS) are
 > kept on the server, not in this repo. See [`deploy/CREDENTIALS.md`](deploy/CREDENTIALS.md)
@@ -77,6 +80,18 @@ GPS data from phones:
 
 Tags: `intervalId`, `deviceId`
 
+## Offline Analysis
+
+`analyze_async.py` downloads all interval data into the local Parquet cache and
+quantifies crew asynchronicity: it detects each rower's catch (median-crossing,
+sub-sample precision), matches catches across sensors to get per-stroke async
+in ms, segments stable-SPM pieces, and tests empirical speed loss against a
+linear model. Results export to `async_analysis_results.csv`.
+
+```bash
+python analyze_async.py --help
+```
+
 ## Development
 
 ```bash
@@ -96,14 +111,16 @@ ruff format .
 ## Project Structure
 
 ```
-srow/
-├── app.py                  # Main Panel application
+SyncRow_Portal/
+├── web/                   # FastAPI + HTMX + Plotly dashboard (production UI)
+│   ├── main.py            # Routes, session auth
+│   ├── charts.py          # DataFrame -> Plotly figure-spec builders
+│   └── templates/         # Jinja2 templates (base, index, chart, login)
 ├── srow/
 │   ├── config/            # Settings and environment loading
-│   ├── services/          # Data access (InfluxDB, GPS)
-│   ├── components/        # Panel UI components
-│   ├── state/             # Application state management
-│   └── utils/             # Utility functions
+│   └── services/          # Data access (InfluxDB, GPS, Parquet cache)
+├── analyze_async.py       # Offline asynchronicity analyzer (research CLI)
+├── deploy/                # VPS deployment (nginx, systemd, scripts)
 ├── tests/                 # Test suite
 └── docs/                  # Documentation
 ```

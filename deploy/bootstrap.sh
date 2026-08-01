@@ -5,7 +5,7 @@
 #   sudo bash bootstrap.sh
 #
 # Idempotent: safe to re-run. It will NOT overwrite existing secrets
-# (/etc/syncrow/portal.env, credentials.json) once created.
+# (/etc/syncrow/portal.env) once created.
 #
 # Prerequisites you handle:
 #   - A domain's DNS A record pointing at this server (for TLS).
@@ -113,15 +113,14 @@ if [ ! -f "$ETC_DIR/portal.env" ]; then
     NEED_EDIT=1
 fi
 
-if [ ! -f "$ETC_DIR/credentials.json" ]; then
-    log "Creating $ETC_DIR/credentials.json with an initial 'admin' user"
-    ADMIN_PW="$(openssl rand -base64 18)"
-    printf '{\n  "admin": "%s"\n}\n' "$ADMIN_PW" > "$ETC_DIR/credentials.json"
-    chmod 640 "$ETC_DIR/credentials.json"
-    chown root:"$APP_USER" "$ETC_DIR/credentials.json"
+# Seed the dashboard login (SROW_USERS) if it's still the placeholder.
+if grep -q '^SROW_USERS=__SET_BY_BOOTSTRAP__' "$ETC_DIR/portal.env" 2>/dev/null; then
+    log "Seeding an initial 'admin' dashboard user in portal.env"
+    ADMIN_PW="$(openssl rand -base64 18 | tr -d '/+=,:')"
+    sed -i "s|^SROW_USERS=.*|SROW_USERS=admin:${ADMIN_PW}|" "$ETC_DIR/portal.env"
     echo
     echo "  >>> Initial login:  admin / ${ADMIN_PW}"
-    echo "  >>> (edit $ETC_DIR/credentials.json to add users, then restart the service)"
+    echo "  >>> (edit SROW_USERS in $ETC_DIR/portal.env to add users, then restart the service)"
     echo
 fi
 

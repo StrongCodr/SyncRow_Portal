@@ -137,10 +137,10 @@ def interval(request: Request, tag: str, value: str):
     )
 
 
-# ─── Niceties: retire the old Panel path, quiet the favicon 404 ──────────────
+# ─── Redirects & favicon ─────────────────────────────────────────────────────
 
 @app.get("/app")
-def old_panel_path():
+def app_redirect():
     return RedirectResponse("/", status_code=301)
 
 

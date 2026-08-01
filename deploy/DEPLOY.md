@@ -1,19 +1,20 @@
 # SyncRow Portal — Deployment Runbook
 
-Native deploy (no Docker): **systemd** runs the Panel app on `127.0.0.1:5006`,
-**nginx** terminates TLS (Let's Encrypt) and reverse-proxies to it, **basic-auth**
-gates access. InfluxDB already runs on this same box.
+Native deploy (no Docker): **systemd** runs uvicorn (`web.main:app`) on
+`127.0.0.1:5006`, **nginx** terminates TLS (Let's Encrypt) and reverse-proxies
+to it, and the app's **session login** gates access. InfluxDB already runs on
+this same box.
 
 ```
-Internet ──443 HTTPS──▶ nginx (TLS, certbot) ──proxy+ws──▶ 127.0.0.1:5006 panel serve (systemd)
-                                                                   │
-                                                                   ▼
-                                                          127.0.0.1:8086 InfluxDB
+Internet ──443 HTTPS──▶ nginx (TLS, certbot) ──proxy──▶ 127.0.0.1:5006 uvicorn (systemd)
+                                                                │
+                                                                ▼
+                                                       127.0.0.1:8086 InfluxDB
 ```
 
-Auth today is **Panel basic-auth** (username/password). Google/GitHub OAuth can be
-added later by switching the `--basic-auth` flag in the service unit for the
-`--oauth-*` flags — the rest of this setup is unchanged.
+Auth is the app's **session-cookie login**; users come from `SROW_USERS` in
+`/etc/syncrow/portal.env` (comma-separated `user:password` pairs), and the
+cookie is signed by `COOKIE_SECRET` from the same file.
 
 ---
 
@@ -26,8 +27,7 @@ added later by switching the `--basic-auth` flag in the service unit for the
 | `deploy.sh` | VPS (root) | Update: `git pull` + restart |
 | `syncrow-portal.service` | `/etc/systemd/system/` | The service unit |
 | `nginx-syncrow.conf` | `/etc/nginx/sites-available/syncrow` | Reverse proxy |
-| `portal.env.example` | `/etc/syncrow/portal.env` | Influx creds, domain, cookie secret (root:600) |
-| `credentials.example.json` | `/etc/syncrow/credentials.json` | Basic-auth users (root:600) |
+| `portal.env.example` | `/etc/syncrow/portal.env` | Influx creds, domain, users, cookie secret (root:640) |
 
 Secrets live in `/etc/syncrow/` only — **never** committed.
 See [`CREDENTIALS.md`](CREDENTIALS.md) for exactly where each credential is kept on the server.
@@ -52,8 +52,8 @@ never on your laptop or in git):
    ```bash
    ./deploy/deploy-from-laptop.sh bootstrap
    ```
-   This writes `/etc/syncrow/portal.env` (auto-generated `COOKIE_SECRET`) and
-   `/etc/syncrow/credentials.json` (initial `admin` password — **printed once**).
+   This writes `/etc/syncrow/portal.env` with an auto-generated `COOKIE_SECRET`
+   and an initial `admin` user in `SROW_USERS` (password **printed once**).
 5. Fill in `/etc/syncrow/portal.env` on the VPS:
    - `INFLUX_TOKEN`, `INFLUX_ORG`, `INFLUX_ORG_ID` — copy from your existing local `.env`
    - `PORTAL_DOMAIN` — your real domain
@@ -84,7 +84,7 @@ never on your laptop or in git):
    > sudo certbot renew --dry-run   # must say "all simulated renewals succeeded"
    > ```
 
-Visit `https://your-domain` → basic-auth login → dashboard.
+Visit `https://your-domain` → log in → dashboard.
 
 > Default target is `root@104.152.48.213`. Override per-run with
 > `SSH_TARGET=root@host ./deploy/deploy-from-laptop.sh ...`.
@@ -103,7 +103,8 @@ From your laptop, after pushing your changes to git:
 
 ## Managing users
 
-Edit `/etc/syncrow/credentials.json` (`{"user": "password", ...}`), then:
+Edit `SROW_USERS` in `/etc/syncrow/portal.env`
+(comma-separated `user:password` pairs), then:
 ```bash
 sudo systemctl restart syncrow-portal
 ```
@@ -119,13 +120,8 @@ sudo certbot renew --dry-run             # verify renewal
 
 ## Notes / hardening TODO
 
-- `COOKIE_SECRET` is passed on the command line, so it is visible in `ps` to local
-  users. On a single-tenant box this is low risk; to remove it, switch to Panel's
-  cookie-secret env var once confirmed for this version.
 - Consider firewalling InfluxDB (`:8086`) to localhost + the phone's source, now
   that the portal talks to it over loopback. The phone still needs remote write
   access, so scope this carefully.
-- OAuth upgrade path: register a Google/GitHub OAuth app, then in
-  `syncrow-portal.service` replace `--basic-auth ... --cookie-secret ...` with
-  `--oauth-provider google --oauth-key ... --oauth-secret ... --cookie-secret ...
-  --oauth-encryption-key ...` and `daemon-reload` + restart.
+- Passwords in `SROW_USERS` are plaintext in a root:640 file; acceptable
+  single-tenant, but hash them (or move to OAuth) if the user set grows.

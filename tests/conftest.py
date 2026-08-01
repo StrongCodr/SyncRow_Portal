@@ -8,7 +8,6 @@ from shapely.geometry import Point
 from unittest.mock import MagicMock
 
 from srow.config import Settings
-from srow.state import AppState
 
 
 @pytest.fixture
@@ -71,19 +70,6 @@ def sample_location_data() -> gpd.GeoDataFrame:
     geometry = [Point(lon, lat) for lat, lon in zip(lats, lons)]
 
     return gpd.GeoDataFrame(df, geometry=geometry, crs="EPSG:4326")
-
-
-@pytest.fixture
-def app_state() -> AppState:
-    """Create an AppState instance for testing."""
-    return AppState()
-
-
-@pytest.fixture
-def app_state_with_data(app_state, sample_imu_data) -> AppState:
-    """Create an AppState with sample data loaded."""
-    app_state.imu_data = sample_imu_data
-    return app_state
 
 
 @pytest.fixture

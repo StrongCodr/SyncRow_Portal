@@ -2,8 +2,7 @@
 
 Pure functions: DataFrame -> Plotly figure spec (plain dict) or map data.
 Backgrounds are transparent so the client theme shows through; the browser
-sets colors on render (see restyleCharts in base.html). Reuses the sync-metric
-logic from the retired Panel app.
+sets colors on render (see restyleCharts in base.html).
 """
 
 import numpy as np

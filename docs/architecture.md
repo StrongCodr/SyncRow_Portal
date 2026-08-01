@@ -1,49 +1,51 @@
-# SyncRow Architecture
+# SyncRow Portal Architecture
 
-This document describes the system design and architecture of the SyncRow Data Explorer.
+This document describes the system design of the SyncRow Portal.
 
 ## Overview
 
-SyncRow is a Panel-based web application for visualizing rowing sensor data. It's designed to handle large datasets (1M+ rows) through efficient data access patterns and visualization techniques.
+The portal is a FastAPI web application for visualizing rowing sensor data,
+plus an offline analyzer for quantifying crew asynchronicity. Charts are
+rendered client-side with Plotly from JSON figure specs built on the server;
+HTMX swaps HTML fragments so there is no SPA framework.
 
 ## System Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Panel Application (app.py)                   │
-├─────────────┬─────────────┬─────────────┬──────────────────────┤
-│  Sidebar    │  Map View   │ Time Series │  Data Table          │
-│  Controls   │  (GeoViews) │ (Datashader)│  (Tabulator)         │
-└─────────────┴─────────────┴─────────────┴──────────────────────┘
-                              │
-┌─────────────────────────────────────────────────────────────────┐
-│              State Management (param.Parameterized)             │
-│                                                                 │
-│   AppState: central reactive state container                    │
-│   - connected, intervals, selected_interval                     │
-│   - imu_data, location_data                                     │
-│   - selected_sources, selected_fields, time_range               │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-┌─────────────────────────────────────────────────────────────────┐
-│                      Data Service Layer                         │
-├─────────────────────────────┬──────────────────────────────────┤
-│       InfluxService         │       LocationService            │
-│       - fetch_interval_tags │       - load_track               │
-│       - load_interval       │       - load_track_simplified    │
-│       - load_aggregated     │       - calculate_distance       │
-│       - summarize_interval  │       - calculate_speed_stats    │
-└─────────────────────────────┴──────────────────────────────────┘
-                              │
-                         InfluxDB
-                    (imu + phone_location)
+                        Browser
+        (HTMX partial swaps + Plotly client-side)
+                           │ HTTPS (nginx, TLS)
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│                 FastAPI app (web/main.py)                   │
+│  session-cookie auth · /login · / (intervals) · /interval   │
+│                                                             │
+│  web/charts.py: DataFrame → Plotly figure-spec dicts        │
+│   - imu_fig    (per-sensor traces)                          │
+│   - sync_fig   (z-score spread → 1/(1+spread) score)        │
+│   - speed_fig  (GPS speed)                                  │
+│   - map figure (GPS track)                                  │
+└─────────────────────────────────────────────────────────────┘
+                           │
+┌─────────────────────────────────────────────────────────────┐
+│              Data Service Layer (srow/services/)            │
+├──────────────────┬──────────────────┬───────────────────────┤
+│  InfluxService   │ LocationService  │  CacheService         │
+│  - interval tags │  - load_track    │  - Parquet local cache│
+│  - load interval │  - distance      │    (used by the       │
+│    (aggregated)  │  - speed stats   │     offline analyzer) │
+└──────────────────┴──────────────────┴───────────────────────┘
+                           │
+                       InfluxDB
+                (imu + phone_location)
 ```
 
 ## Component Responsibilities
 
 ### Config Layer (`srow/config/`)
 
-- **settings.py**: Defines the `Settings` dataclass that holds InfluxDB connection parameters. Immutable (frozen dataclass) to prevent accidental modification.
+- **settings.py**: Defines the `Settings` dataclass that holds InfluxDB
+  connection parameters. Immutable (frozen dataclass).
 - **env_utils.py**: Loads `.env` files to populate environment variables.
 
 ### Service Layer (`srow/services/`)
@@ -62,126 +64,64 @@ SyncRow is a Panel-based web application for visualizing rowing sensor data. It'
   - `calculate_distance()`: Total distance in meters
   - `summarize_track()`: Track statistics
 
-### State Layer (`srow/state/`)
+- **CacheService**: Local Parquet cache of raw interval data. Primarily used
+  by `analyze_async.py` for resumable bulk downloads.
 
-- **AppState**: Central reactive state using `param.Parameterized`. Components watch these parameters and update automatically when values change.
+### Web Layer (`web/`)
 
-Key patterns:
-```python
-# Components watch state
-state.param.watch(self._update_plot, "imu_data")
+- **main.py**: FastAPI routes and session-cookie auth. `GET /` lists
+  intervals; `GET /interval` returns an HTML fragment embedding Plotly figure
+  JSON for the selected interval. Users come from `SROW_USERS` env
+  (dev fallback `admin`/`admin`).
+- **charts.py**: Pure functions, `DataFrame → Plotly figure-spec dict`.
+  No web-framework imports — testable in isolation.
+- **templates/**: Jinja2 — `base.html` (theme, Plotly setup, HTMX),
+  `index.html` (interval list), `chart.html` (chart fragment), `login.html`.
 
-# State updates propagate to watchers
-state.imu_data = new_dataframe  # Triggers _update_plot
-```
+### Offline Analyzer (`analyze_async.py`)
 
-### Component Layer (`srow/components/`)
+Standalone research CLI (not part of the web app): downloads all intervals
+into the Parquet cache, detects per-rower catch events (median-crossing,
+sub-sample timing), matches catches across sensors into per-stroke
+asynchronicity (ms), segments stable-SPM pieces, and compares empirical speed
+loss to a linear model. Exports `async_analysis_results.csv`.
 
-- **SidebarComponent**: Interval selection, filters, connection status
-- **TimeSeriesComponent**: Datashader-enabled time series plots
-- **MapViewComponent**: GeoViews map with GPS tracks
-- **DataTableComponent**: Tabulator with virtual scrolling
-
-### Main Application (`app.py`)
-
-The `create_app()` function:
-1. Loads settings
-2. Creates services
-3. Creates state
-4. Creates components
-5. Wires up event handlers
-6. Returns the Panel template
-
-Supports dependency injection for testing.
-
-## Data Flow
-
-### Loading an Interval
+## Data Flow — loading an interval
 
 ```
-User selects interval
+User clicks an interval (HTMX GET /interval?...)
         │
         ▼
-state.selected_interval = {...}
+web/main.py: influx_service.load_interval_aggregated()
+        │            (InfluxDB Flux query, ~200 ms windows)
+        ▼
+web/charts.py: build imu/sync/speed/map figure specs (JSON)
         │
         ▼
-load_interval_data() handler triggered
-        │
-        ├──► influx_service.load_interval()
-        │           │
-        │           ▼
-        │    InfluxDB Flux query
-        │           │
-        │           ▼
-        │    DataFrame with sensor data
-        │
-        ├──► influx_service.unwrap_angles()
-        │           │
-        │           ▼
-        │    Angles corrected for ±180° wrap
+chart.html fragment rendered → HTMX swaps it in
         │
         ▼
-state.imu_data = df
-        │
-        ▼
-Components watching imu_data update automatically
-```
-
-### Filtering Data
-
-```
-User changes source selection
-        │
-        ▼
-state.selected_sources = [...]
-        │
-        ▼
-TimeSeriesComponent._update_plot() triggered
-        │
-        ▼
-state.get_filtered_data() called
-        │
-        ▼
-Plot updated with filtered data
+Browser: Plotly renders; zoom/pan/theme are client-side
 ```
 
 ## Performance Strategies
 
-### Large Dataset Handling
-
-1. **Datashader**: Server-side aggregation for plotting. Renders millions of points as aggregated images.
-
-2. **Pre-aggregation**: `load_interval_aggregated()` uses InfluxDB's `aggregateWindow()` to reduce data before transfer.
-
-3. **Virtual scrolling**: Tabulator only renders visible rows, handling millions efficiently.
-
-4. **Time range queries**: `load_time_range()` loads only a window of data when zoomed in.
-
-### Memory Management
-
-- `clear_data()` releases data when switching intervals
-- Services don't cache data (state is the single source)
-- Chunked loading available via `load_interval_chunked()`
+1. **Pre-aggregation**: `load_interval_aggregated()` uses InfluxDB's
+   `aggregateWindow()` to reduce data before transfer (~200 ms windows for
+   display).
+2. **Client-side rendering**: the server ships figure specs once; all
+   interaction (zoom, pan, theme restyle) happens in the browser.
+3. **Plain scatter (not WebGL)**: `scattergl` caused context-loss crashes on
+   HTMX swaps; charts use SVG `scatter` and are explicitly purged on swap
+   (see `restyleCharts` in `base.html`).
+4. **Parquet cache**: the offline analyzer streams full-resolution data once
+   into local Parquet, making reruns and resumes cheap.
 
 ## Testing Strategy
 
-### Unit Tests
-
-- Services tested with mocked InfluxDB client
-- Utility functions tested with edge cases
-- State tested for reactive behavior
-
-### Integration Tests
-
-- Components tested with sample data fixtures
-- Data flow tested end-to-end
-
-### Fixtures
-
-Common fixtures in `conftest.py`:
-- `sample_settings`: Test configuration
-- `sample_imu_data`: 200 rows of IMU data
-- `sample_location_data`: 50 GPS points
+- Services tested with mocked InfluxDB client.
+- Fixtures in `tests/conftest.py`: `sample_settings`, `sample_imu_data`,
+  `sample_location_data`, `mock_influx_client`, `env_file`.
 
 ## Security Considerations
 
@@ -194,29 +134,32 @@ def _escape_flux_string(value: str) -> str:
     return str(value).replace("\\", "\\\\").replace('"', '\\"')
 ```
 
-### Credentials
+### Credentials & Auth
 
-- Never commit `.env` files
-- Use environment variables in production
-- `.gitignore` excludes `.env`
+- Session-cookie login (Starlette `SessionMiddleware`); users from
+  `SROW_USERS`, secret from `SESSION_SECRET`.
+- Never commit `.env`; production secrets live in `/etc/syncrow/` on the VPS
+  (see `deploy/CREDENTIALS.md`).
+- uvicorn binds to localhost only; nginx is the sole public face (TLS).
+
+## Deployment
+
+Internet → nginx :443 (Let's Encrypt) → uvicorn `web.main:app` on
+`127.0.0.1:5006`, managed by systemd (`deploy/syncrow-portal.service`), on a
+VPS that also hosts InfluxDB. Driven from a laptop via
+`deploy/deploy-from-laptop.sh`. See `deploy/DEPLOY.md`.
 
 ## Extension Points
 
 ### Adding New Measurements
 
-1. Create new service in `srow/services/`
-2. Add query methods following existing patterns
-3. Update state with new data parameter
-4. Create or update component to visualize
-
-### Adding New Visualizations
-
-1. Create component in `srow/components/`
-2. Watch relevant state parameters
-3. Add to template in `app.py`
+1. Create a new service in `srow/services/` following existing patterns.
+2. Add a figure builder in `web/charts.py`.
+3. Wire a route/fragment in `web/main.py` + `templates/`.
 
 ### Adding New Analysis
 
-1. Add analysis methods to appropriate service
-2. Create component to display results
-3. Wire up in `app.py`
+1. Prefer putting reusable signal-processing logic in the `srow` package so
+   both the web app and `analyze_async.py` can share it.
+2. Surface results either as a chart fragment (online) or CSV export
+   (offline).

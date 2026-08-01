@@ -1,6 +1,6 @@
-# SyncRow Development Guide
+# SyncRow Portal Development Guide
 
-This guide covers setting up the development environment and contributing to SyncRow.
+This guide covers setting up the development environment and contributing.
 
 ## Prerequisites
 
@@ -12,9 +12,8 @@ This guide covers setting up the development environment and contributing to Syn
 ### 1. Clone the Repository
 
 ```bash
-cd /path/to/your/projects
-git clone <repository-url> srow
-cd srow
+git clone https://github.com/StrongCodr/SyncRow_Portal.git
+cd SyncRow_Portal
 ```
 
 ### 2. Create Virtual Environment
@@ -27,8 +26,8 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 ### 3. Install Dependencies
 
 ```bash
-# Install with development dependencies
-pip install -e ".[dev]"
+# web extra = FastAPI/uvicorn/Jinja2; dev extra = pytest/ruff
+pip install -e ".[web,dev]"
 ```
 
 ### 4. Configure Environment
@@ -43,37 +42,45 @@ INFLUX_ORG_ID=your-org-id
 INFLUX_BUCKET=syncrow
 ```
 
+Optional for the web app: `SESSION_SECRET`, `SROW_USERS`
+(comma-separated `user:password` pairs; dev fallback is `admin`/`admin`).
+
 ### 5. Verify Setup
 
 ```bash
 # Run tests
 pytest
 
-# Start the app
-panel serve app.py --show --autoreload
+# Start the dashboard
+uvicorn web.main:app --reload --port 5006
 ```
+
+Open http://localhost:5006.
 
 ## Project Structure
 
 ```
-srow/
-├── app.py                  # Main application entry point
-├── pyproject.toml          # Project configuration and dependencies
-├── start.sh               # Quick-start script
+SyncRow_Portal/
+├── pyproject.toml         # Project configuration and dependencies
 ├── .env                   # Environment configuration (not in git)
 │
-├── srow/                  # Main package
-│   ├── config/           # Configuration management
-│   ├── services/         # Data access services
-│   ├── components/       # Panel UI components
-│   ├── state/            # Application state
-│   └── utils/            # Utility functions
+├── web/                   # FastAPI + HTMX + Plotly dashboard
+│   ├── main.py            # Routes, session auth
+│   ├── charts.py          # DataFrame -> Plotly figure-spec builders
+│   └── templates/         # Jinja2 templates
 │
-├── tests/                # Test suite
-│   ├── conftest.py      # Shared fixtures
-│   └── test_*.py        # Test modules
+├── srow/                  # Data-layer package
+│   ├── config/            # Configuration management
+│   └── services/          # Data access services (Influx, GPS, cache)
 │
-└── docs/                 # Documentation
+├── analyze_async.py       # Offline asynchronicity analyzer (research CLI)
+│
+├── tests/                 # Test suite
+│   ├── conftest.py        # Shared fixtures
+│   └── test_*.py          # Test modules
+│
+├── deploy/                # VPS deployment tooling
+└── docs/                  # Documentation
 ```
 
 ## Running the Application
@@ -82,17 +89,14 @@ srow/
 
 ```bash
 # With auto-reload on code changes
-panel serve app.py --show --autoreload
-
-# Or use the start script
-./start.sh
+uvicorn web.main:app --reload --port 5006
 ```
 
 ### Production Mode
 
-```bash
-panel serve app.py --address 0.0.0.0 --port 5006 --allow-websocket-origin=*
-```
+Production runs under systemd + nginx on the VPS — do not run uvicorn
+publicly by hand. See `deploy/DEPLOY.md`; deploys are driven via
+`./deploy/deploy-from-laptop.sh update`.
 
 ## Testing
 
@@ -183,49 +187,28 @@ __all__ = [..., "MyService"]
 
 3. Write tests in `tests/test_my_service.py`
 
-4. Use in `app.py`
+4. Use in `web/main.py`
 
-### Adding a New Component
+### Adding a New Chart
 
-1. Create the component in `srow/components/`:
-
-```python
-# srow/components/my_component.py
-import panel as pn
-import param
-from srow.state import AppState
-
-class MyComponent(pn.viewable.Viewer):
-    state = param.ClassSelector(class_=AppState)
-
-    def __init__(self, state: AppState, **params):
-        params["state"] = state
-        super().__init__(**params)
-        # Initialize widgets...
-
-    def __panel__(self):
-        return pn.Column(...)
-```
-
-2. Export from `__init__.py`
-
-3. Add to the template in `app.py`
-
-### Adding State Parameters
-
-1. Add parameter to `AppState`:
+1. Add a pure builder function in `web/charts.py`
+   (`DataFrame → Plotly figure-spec dict`, no framework imports):
 
 ```python
-# srow/state/app_state.py
-class AppState(param.Parameterized):
-    my_param = param.String(default="", doc="Description")
+def my_fig(df: pd.DataFrame | None):
+    if df is None or df.empty:
+        return None
+    data = [{"type": "scatter", "mode": "lines", ...}]
+    layout = {**_BASE_LAYOUT, "height": 300}
+    return {"data": data, "layout": layout}
 ```
 
-2. Components can watch the parameter:
+2. Call it from the `/interval` route in `web/main.py` and embed the JSON in
+   `templates/chart.html`.
 
-```python
-state.param.watch(self._on_my_param_change, "my_param")
-```
+3. Charts must use `scatter` (SVG), not `scattergl` — WebGL contexts crash on
+   HTMX swaps. Theme restyling happens client-side in `base.html`
+   (`restyleCharts`).
 
 ## Debugging
 
@@ -236,29 +219,19 @@ import logging
 logging.basicConfig(level=logging.DEBUG)
 ```
 
-### Panel Debug Mode
+### FastAPI Interactive Docs
 
-```bash
-panel serve app.py --show --autoreload --log-level=debug
-```
-
-### Inspect State
-
-In a running app, you can access state via:
-
-```python
-# In browser console (if using Panel with pn.extension(debugger))
-Bokeh.documents[0].get_model_by_name('AppState')
-```
+With the server running, http://localhost:5006/docs exposes the routes
+(handy for checking `/interval` query params).
 
 ## Common Issues
 
 ### "Module not found" Errors
 
-Make sure you've installed in editable mode:
+Make sure you've installed in editable mode with the web extra:
 
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[web,dev]"
 ```
 
 ### InfluxDB Connection Issues
@@ -267,19 +240,10 @@ pip install -e ".[dev]"
 2. Check network connectivity to InfluxDB
 3. Verify token has read permissions
 
-### GeoViews Not Available
+### Login Loop / Session Issues
 
-Install geospatial dependencies:
-
-```bash
-pip install geoviews geopandas
-```
-
-On macOS, you may need:
-
-```bash
-brew install gdal
-```
+Set a stable `SESSION_SECRET` — with the ephemeral default, sessions are
+invalidated on every reload.
 
 ## Performance Profiling
 
@@ -294,14 +258,6 @@ with cProfile.Profile() as pr:
 
 stats = pstats.Stats(pr)
 stats.sort_stats('cumtime').print_stats(20)
-```
-
-### Memory Profiling
-
-```bash
-pip install memory-profiler
-
-python -m memory_profiler app.py
 ```
 
 ## Contributing

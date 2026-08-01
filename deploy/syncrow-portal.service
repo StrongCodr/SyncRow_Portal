@@ -14,8 +14,7 @@ WorkingDirectory=/opt/syncrow/SyncRow_Portal
 # Provides: INFLUX_URL, INFLUX_TOKEN, INFLUX_ORG, INFLUX_ORG_ID, INFLUX_BUCKET.
 EnvironmentFile=/etc/syncrow/portal.env
 
-# Bind to localhost only — nginx is the sole public face (TLS + basic-auth via
-# /etc/nginx/.htpasswd terminate there).
+# Bind to localhost only — nginx is the sole public face (TLS terminates there).
 ExecStart=/opt/syncrow/SyncRow_Portal/.venv/bin/uvicorn web.main:app \
     --host 127.0.0.1 \
     --port 5006
