@@ -34,9 +34,12 @@ def main():
     # so Influx scans hours, not the whole 10-year bucket.
     m = re.search(r"(\d{13})", iv["value"])
     if m:
-        start = datetime.datetime.fromtimestamp(int(m.group(1)) / 1000, tz=datetime.timezone.utc)
-        start -= datetime.timedelta(seconds=60)
-        end = start + datetime.timedelta(hours=3)
+        # NOTE: the interval-name epoch (session start) can differ from the data
+        # timestamps by hours (observed ~9h). Scan +/- 2 days around it — cheap
+        # (tag-filtered) and robust to that offset.
+        anchor = datetime.datetime.fromtimestamp(int(m.group(1)) / 1000, tz=datetime.timezone.utc)
+        start = anchor - datetime.timedelta(days=2)
+        end = anchor + datetime.timedelta(days=2)
         df = influx.load_time_range(iv["tag"], iv["value"], start, end)
     else:
         df = influx.load_interval(tag_name=iv["tag"], interval_value=iv["value"])
