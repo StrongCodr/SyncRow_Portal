@@ -14,7 +14,12 @@ repo; everything else here.
 - [x] Per-crossing timing uncertainty (true high-freq noise / slope).
 - [x] Reference = stroke seat (highest index); signed per-seat offset + crew spread. **Two estimators agree.**
 - [x] Allow N≥2 (rowing sensors only; cox auto-excluded via stroke-band check).
-- [ ] Apply warm-up/validity gate to trim per-stroke tails; full keep-and-flag (`drill`/`low_confidence`).
+- [x] keep-and-flag: `drill` / `low_confidence` / `out_of_range` per stroke (excluded from valid-stroke aggregates, not dropped).
+- [x] Per-seat offset uncertainty (quadrature of catch uncertainties); stop reporting sub-jitter precision.
+- [x] All magic numbers in `config.AnalysisConfig`; local per-stroke window (rate-change robustness).
+- [x] Tests: `tests/test_analysis.py` — gaussian_lag sign, axis recovery, non-rowing exclusion, and **synthetic ground-truth** (recovers injected offsets ±sign).
+- [ ] **HARDWARE ground-truth bench test** (two sensors tapped together / known injected delay) — synthetic proves the math; real rig still unproven.
+- [ ] Validate across ALL 7 intervals + a 2× (2-sensor) case, not just one.
 - [ ] Retire `analyze_async` in favor of the engine (CLI wrapper).
 - [ ] Demote `1/(1+spread)` to secondary series, recomputed on raw.
 - [ ] (Optional) wavelet second detector.
