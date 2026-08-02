@@ -18,7 +18,7 @@ from srow.config import load_settings
 from srow.services import InfluxService
 from srow.analysis import build_sensor_frame, detect_catches
 from srow.analysis.load import load_raw_by_source
-from srow.analysis.crosssensor import analyze_cross
+from srow.analysis.crosssensor import analyze_cross, pairwise_lags
 
 
 def main():
@@ -89,6 +89,15 @@ def main():
         spreads = np.array([st.spread_ms for st in res.strokes])
         print(f"\n  crew spread (ms): median={np.median(spreads):.1f}  "
               f"p90={np.percentile(spreads,90):.1f}")
+
+        # Cross-correlation diagnostic: waveform lag (phase-independent) + sign.
+        print("\n  x-corr vs stroke (whole-waveform):  corr-sign   lag(ms)")
+        lags = pairwise_lags(frames, res.reference, seats)
+        for s in seats:
+            if s in lags:
+                c0, lag = lags[s]
+                print(f"    {s:<18} {'+' if c0 >= 0 else '- (ANTIPHASE!)':<16} "
+                      f"{lag if lag is not None else float('nan'):>+8.1f}")
 
 
 if __name__ == "__main__":

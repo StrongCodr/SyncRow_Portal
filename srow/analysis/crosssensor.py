@@ -103,6 +103,39 @@ def analyze_cross(frames: dict[str, SensorFrame],
     return CrossResult(reference=ref, rowers=rowers, excluded=excluded, strokes=strokes)
 
 
+def _common_grid(frames: dict[str, SensorFrame], sources: list[str], fs: float):
+    """Interpolate the given sensors' signals onto one shared uniform grid."""
+    t0 = max(frames[s].times_s[0] for s in sources)
+    t1 = min(frames[s].times_s[-1] for s in sources)
+    if t1 <= t0:
+        return None
+    grid = np.arange(t0, t1, 1.0 / fs)
+    sigs = {s: np.interp(grid, frames[s].times_s, frames[s].signal) for s in sources}
+    return grid, sigs
+
+
+def pairwise_lags(frames: dict[str, SensorFrame], ref: str, others: list[str],
+                  fs: float = 50.0, max_lag_s: float = 1.0) -> dict[str, tuple[float, float | None]]:
+    """Per seat: (zero-lag correlation sign, x-corr lag in ms) vs the reference.
+
+    Correlation sign < 0 means the sensor's synthetic axis is anti-phase and its
+    signal must be flipped before catch matching. Lag is the whole-waveform offset
+    (independent of catch phase) — the second estimator and the alignment key.
+    """
+    cg = _common_grid(frames, [ref] + others, fs)
+    if cg is None:
+        return {}
+    _, sigs = cg
+    a = sigs[ref] - sigs[ref].mean()
+    out: dict[str, tuple[float, float | None]] = {}
+    for s in others:
+        b = sigs[s] - sigs[s].mean()
+        c0 = float(np.dot(a, b))
+        lag = gaussian_lag(sigs[ref], sigs[s], fs, max_lag_s)
+        out[s] = (c0, (lag * 1000.0) if lag is not None else None)
+    return out
+
+
 def gaussian_lag(sig_ref: np.ndarray, sig_other: np.ndarray, fs: float,
                  max_lag_s: float) -> float | None:
     """Second estimator: sub-sample lag of `sig_other` vs `sig_ref` by cross-
