@@ -70,7 +70,15 @@ def analyze_cross(frames: dict[str, SensorFrame],
     other_unc = {s: {c.time_s: c.uncertainty_s for c in catches.get(s, [])} for s in others}
 
     period_s = 1.0 / frames[ref].dominant_hz if frames[ref].dominant_hz > 0 else 2.0
-    tol = 0.5 * period_s
+
+    # Coarse per-seat lag from whole-waveform x-corr — centers the catch search so
+    # nearest-match can't alias to an adjacent stroke (the second estimator, §6.3).
+    coarse: dict[str, float] = {}
+    pl = pairwise_lags(frames, ref, others)
+    for s in others:
+        lag_ms = pl.get(s, (0.0, None))[1]
+        coarse[s] = (lag_ms / 1000.0) if lag_ms is not None else 0.0
+    tol = 0.30 * period_s  # tight window around the coarse-aligned expectation
 
     strokes: list[StrokeSync] = []
     for i in range(1, len(ref_catches)):
@@ -84,10 +92,10 @@ def analyze_cross(frames: dict[str, SensorFrame],
             ts = other_t[s]
             if ts.size == 0:
                 continue
-            j = int(np.argmin(np.abs(ts - t_ref)))
-            diff = float(ts[j] - t_ref)
-            if abs(diff) <= tol:
-                offsets[s] = diff * 1000.0  # ms, signed (+ = later than stroke)
+            expected = t_ref + coarse[s]
+            j = int(np.argmin(np.abs(ts - expected)))
+            if abs(float(ts[j]) - expected) <= tol:
+                offsets[s] = float(ts[j] - t_ref) * 1000.0  # signed (+ = later)
                 uncs[s] = 1000.0 * other_unc[s].get(float(ts[j]), 0.0)
 
         vals = list(offsets.values())
