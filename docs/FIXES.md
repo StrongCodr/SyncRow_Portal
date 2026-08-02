@@ -4,16 +4,18 @@ Canonical checklist for the ingest-time analysis pipeline. Design rationale live
 in [`../RESEARCH.md`](../RESEARCH.md). Phone items are in the **SyncRow** (Android)
 repo; everything else here.
 
-## Portal analysis engine — `srow/analysis/` (single source of truth)
-- [ ] Extract/replace `analyze_async` logic into `srow/analysis/`; CLI + worker + backfill import it.
-- [ ] Synthetic axis: gravity `down` + gyro-PCA `sweep` + cross; feather rejection (stroke-band); deterministic PCA sign; project to signed 1-D; z-score.
-- [ ] Compute on RAW; estimate per-sensor rate; uniform resample before spectral/correlation.
-- [ ] Running-median crossing + sub-sample catch timing.
-- [ ] Second estimator: cross-correlation lag, Gaussian peak interp.
-- [ ] Per-crossing timing uncertainty (error bars).
-- [ ] Reference = stroke seat (highest index); signed per-seat offset + crew-centroid spread.
-- [ ] Allow N≥2 sensors; keep-and-flag strokes (`drill`/`out_of_range`/`low_confidence`).
-- [ ] Shared `stroke_validity` spec (phone + portal cite it).
+## Portal analysis engine — `srow/analysis/` (built + validated on real data)
+- [x] `srow/analysis/` engine (`frame`,`detect`,`resample`,`load`,`crosssensor`,`engine`,`validity`).
+- [x] Synthetic axis: gravity `down` + gyro-PCA `sweep`, feather rejection, deterministic sign, projected signed 1-D, z-score. **Validated: ~90% variance-explained.**
+- [x] Compute on RAW; per-sensor rate estimate; **streaming loader** (fixed OOM) + uniform resample.
+- [x] Running-median crossing + sub-sample catch timing (hysteresis + refractory → 1 catch/stroke).
+- [x] Cross-correlation lag (Gaussian interp) — **per-stroke windowed x-corr is the primary offset estimator**.
+- [x] Cross-sensor sign alignment (flip anti-phase seats before matching).
+- [x] Per-crossing timing uncertainty (true high-freq noise / slope).
+- [x] Reference = stroke seat (highest index); signed per-seat offset + crew spread. **Two estimators agree.**
+- [x] Allow N≥2 (rowing sensors only; cox auto-excluded via stroke-band check).
+- [ ] Apply warm-up/validity gate to trim per-stroke tails; full keep-and-flag (`drill`/`low_confidence`).
+- [ ] Retire `analyze_async` in favor of the engine (CLI wrapper).
 - [ ] Demote `1/(1+spread)` to secondary series, recomputed on raw.
 - [ ] (Optional) wavelet second detector.
 
