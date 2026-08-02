@@ -8,6 +8,8 @@ Pulls raw IMU from InfluxDB, builds the synthetic frame per sensor, detects
 catches, and prints diagnostics. No writes — read-only validation.
 """
 
+import datetime
+import re
 import sys
 
 import numpy as np
@@ -28,7 +30,16 @@ def main():
     iv = next((i for i in intervals if i["value"] == target), intervals[0])
     print(f"interval: {iv['value']}  ({iv.get('label')})")
 
-    df = influx.load_interval(tag_name=iv["tag"], interval_value=iv["value"])
+    # Bounded query: derive the window from the interval name (Interval_<epoch_ms>)
+    # so Influx scans hours, not the whole 10-year bucket.
+    m = re.search(r"(\d{13})", iv["value"])
+    if m:
+        start = datetime.datetime.fromtimestamp(int(m.group(1)) / 1000, tz=datetime.timezone.utc)
+        start -= datetime.timedelta(seconds=60)
+        end = start + datetime.timedelta(hours=3)
+        df = influx.load_time_range(iv["tag"], iv["value"], start, end)
+    else:
+        df = influx.load_interval(tag_name=iv["tag"], interval_value=iv["value"])
     if df is None or df.empty:
         print("no raw data")
         return
