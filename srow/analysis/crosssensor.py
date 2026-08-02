@@ -1,0 +1,137 @@
+"""Cross-sensor synchronicity (RESEARCH.md §7).
+
+Reference = the stroke seat (highest seat index). For each reference catch, match
+the nearest catch on every other rowing sensor within tolerance, and report each
+seat's SIGNED offset vs stroke (stroke = 0) plus the crew spread. Non-rowing
+sensors (e.g. the cox, or anything with no in-band stroke rhythm) are excluded.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+
+import numpy as np
+
+from . import validity
+from .detect import Catch
+from .frame import SensorFrame
+
+
+def seat_index(source: str) -> int | None:
+    """Parse a seat number from a source label ('Seat 4 (...)' -> 4). Cox -> None."""
+    m = re.search(r"seat\s*(\d+)", source, re.IGNORECASE)
+    return int(m.group(1)) if m else None
+
+
+def is_rowing(frame: SensorFrame) -> bool:
+    """A sensor is 'rowing' if its dominant frequency sits in the stroke band."""
+    lo, hi = validity.STROKE_BAND_HZ
+    return lo <= frame.dominant_hz <= hi
+
+
+@dataclass
+class StrokeSync:
+    stroke_time_s: float                 # reference (stroke seat) catch time
+    spm: float                           # 60 / interval to previous stroke catch
+    offsets_ms: dict[str, float]         # per seat, signed vs stroke (stroke ~ 0)
+    uncertainty_ms: dict[str, float]     # per-seat catch timing uncertainty
+    spread_ms: float                     # max-min across matched seats
+    n_matched: int
+    flags: list[str] = field(default_factory=list)
+
+
+@dataclass
+class CrossResult:
+    reference: str | None
+    rowers: list[str]
+    excluded: list[str]
+    strokes: list[StrokeSync]
+
+
+def analyze_cross(frames: dict[str, SensorFrame],
+                  catches: dict[str, list[Catch]]) -> CrossResult:
+    rowers = [s for s, f in frames.items() if is_rowing(f)]
+    excluded = [s for s in frames if s not in rowers]
+    if len(rowers) < 2:
+        return CrossResult(reference=None, rowers=rowers, excluded=excluded, strokes=[])
+
+    # Reference = highest seat index among rowing sensors (stroke seat).
+    ref = max(rowers, key=lambda s: (seat_index(s) if seat_index(s) is not None else -1))
+    others = [s for s in rowers if s != ref]
+
+    ref_catches = np.array([c.time_s for c in catches.get(ref, [])])
+    ref_unc = {c.time_s: c.uncertainty_s for c in catches.get(ref, [])}
+    if ref_catches.size < 3:
+        return CrossResult(reference=ref, rowers=rowers, excluded=excluded, strokes=[])
+
+    # Pre-sort each other sensor's catches for nearest lookup.
+    other_t = {s: np.array([c.time_s for c in catches.get(s, [])]) for s in others}
+    other_unc = {s: {c.time_s: c.uncertainty_s for c in catches.get(s, [])} for s in others}
+
+    period_s = 1.0 / frames[ref].dominant_hz if frames[ref].dominant_hz > 0 else 2.0
+    tol = 0.5 * period_s
+
+    strokes: list[StrokeSync] = []
+    for i in range(1, len(ref_catches)):
+        t_ref = float(ref_catches[i])
+        stroke_period = t_ref - float(ref_catches[i - 1])
+        spm = 60.0 / stroke_period if stroke_period > 0 else 0.0
+
+        offsets = {ref: 0.0}
+        uncs = {ref: 1000.0 * ref_unc.get(t_ref, 0.0)}
+        for s in others:
+            ts = other_t[s]
+            if ts.size == 0:
+                continue
+            j = int(np.argmin(np.abs(ts - t_ref)))
+            diff = float(ts[j] - t_ref)
+            if abs(diff) <= tol:
+                offsets[s] = diff * 1000.0  # ms, signed (+ = later than stroke)
+                uncs[s] = 1000.0 * other_unc[s].get(float(ts[j]), 0.0)
+
+        vals = list(offsets.values())
+        spread = (max(vals) - min(vals)) if len(vals) >= 2 else 0.0
+        flags: list[str] = []
+        if (f := validity.spm_flag(spm)):
+            flags.append(f)
+        strokes.append(StrokeSync(
+            stroke_time_s=t_ref, spm=spm, offsets_ms=offsets, uncertainty_ms=uncs,
+            spread_ms=spread, n_matched=len(offsets), flags=flags,
+        ))
+
+    return CrossResult(reference=ref, rowers=rowers, excluded=excluded, strokes=strokes)
+
+
+def gaussian_lag(sig_ref: np.ndarray, sig_other: np.ndarray, fs: float,
+                 max_lag_s: float) -> float | None:
+    """Second estimator: sub-sample lag of `sig_other` vs `sig_ref` by cross-
+    correlation with GAUSSIAN peak interpolation (RESEARCH.md §6.3).
+
+    Returns lag in seconds (+ = other lags reference), or None.
+    """
+    a = np.asarray(sig_ref, float)
+    b = np.asarray(sig_other, float)
+    n = min(a.size, b.size)
+    if n < 8 or fs <= 0:
+        return None
+    a = (a[:n] - a[:n].mean())
+    b = (b[:n] - b[:n].mean())
+    corr = np.correlate(b, a, mode="full")
+    lags = np.arange(-n + 1, n)
+    max_lag = int(max_lag_s * fs)
+    mask = np.abs(lags) <= max_lag
+    corr, lags = corr[mask], lags[mask]
+    if corr.size < 3:
+        return None
+    k = int(np.argmax(corr))
+    if k == 0 or k == corr.size - 1 or corr[k] <= 0:
+        return float(lags[k]) / fs
+    # Gaussian interpolation: fit a parabola to the logs of the 3 points.
+    ym1, y0, yp1 = corr[k - 1], corr[k], corr[k + 1]
+    if ym1 <= 0 or y0 <= 0 or yp1 <= 0:
+        return float(lags[k]) / fs
+    lm1, l0, lp1 = np.log(ym1), np.log(y0), np.log(yp1)
+    denom = (lm1 - 2 * l0 + lp1)
+    delta = 0.5 * (lm1 - lp1) / denom if denom != 0 else 0.0
+    return float(lags[k] + delta) / fs
