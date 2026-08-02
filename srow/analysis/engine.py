@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .config import DEFAULT, AnalysisConfig
 from .crosssensor import (
     CrossResult,
     align_signs,
@@ -28,11 +29,12 @@ class IntervalAnalysis:
     flipped: list[str]
 
 
-def analyze_interval(by_source: dict[str, dict]) -> IntervalAnalysis:
+def analyze_interval(by_source: dict[str, dict],
+                     cfg: AnalysisConfig = DEFAULT) -> IntervalAnalysis:
     """by_source: {source: {"times_s","accel","gyro"}} from load_raw_by_source."""
     frames: dict[str, SensorFrame] = {}
     for src, d in by_source.items():
-        f = build_sensor_frame(d["times_s"], d["accel"], d["gyro"])
+        f = build_sensor_frame(d["times_s"], d["accel"], d["gyro"], cfg)
         if f is not None:
             frames[src] = f
 
@@ -40,11 +42,11 @@ def analyze_interval(by_source: dict[str, dict]) -> IntervalAnalysis:
     flipped: list[str] = []
     if len(rowers) >= 2:
         ref = max(rowers, key=lambda s: seat_index(s) if seat_index(s) is not None else -1)
-        flipped = align_signs(frames, ref, rowers)  # phase-align BEFORE detection
+        flipped = align_signs(frames, ref, rowers, cfg)  # phase-align BEFORE detection
 
     catches = {
-        s: detect_catches(f.times_s, f.signal, f.fs, f.dominant_hz)
+        s: detect_catches(f.times_s, f.signal, f.fs, f.dominant_hz, cfg)
         for s, f in frames.items()
     }
-    cross = analyze_cross(frames, catches)
+    cross = analyze_cross(frames, catches, cfg)
     return IntervalAnalysis(frames=frames, catches=catches, cross=cross, flipped=flipped)

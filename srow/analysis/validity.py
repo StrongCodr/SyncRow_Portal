@@ -3,7 +3,8 @@
 The ONE definition of "this is real rowing" that both the portal (this code) and
 the phone (Kotlin) must agree on. Keep the criteria and thresholds here so there
 is a single citable source; if the phone displays a stroke the portal discards,
-trust breaks.
+trust breaks. Algorithm *tuning* knobs live in `config.py`; validity *criteria*
+live here.
 """
 
 from __future__ import annotations
@@ -12,22 +13,22 @@ from __future__ import annotations
 # the feather/square roll and warm-up chaos live outside it.
 STROKE_BAND_HZ: tuple[float, float] = (0.2, 0.75)
 
-# Minimum rotational energy (std of the projected sweep signal, in deg/s) for a
-# window to count as "rowing" rather than paddling/positioning. Tuned on real
-# data in the probe; conservative default.
-MIN_SWEEP_ENERGY_DEG_S: float = 15.0
-
-# A window is "active rowing" if its dominant spectral peak is in-band AND its
-# in-band power fraction clears this (rejects broadband warm-up noise).
-MIN_INBAND_POWER_FRAC: float = 0.30
+# Minimum sweep amplitude (std of the projected sweep signal, deg/s, BEFORE
+# z-scoring) for a sensor to count as "rowing" vs. paddling/positioning/cox.
+MIN_SWEEP_ENERGY_DEG_S: float = 10.0
 
 # Physical sanity bounds on a single stroke's rate (flag, don't drop).
 SPM_MIN: float = 10.0
 SPM_MAX: float = 50.0
 
 
+def in_stroke_band(hz: float) -> bool:
+    lo, hi = STROKE_BAND_HZ
+    return lo <= hz <= hi
+
+
 def spm_flag(spm: float) -> str | None:
-    """Return 'out_of_range' if the per-stroke SPM is physically implausible."""
+    """'out_of_range' if the per-stroke SPM is physically implausible."""
     if spm < SPM_MIN or spm > SPM_MAX:
         return "out_of_range"
     return None

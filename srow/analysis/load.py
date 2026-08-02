@@ -78,8 +78,8 @@ from(bucket: "{bucket}")
             x = np.asarray(fields[name][1], dtype=float)
             if t.size == n:
                 return x
-            if t.size >= 2:  # a field dropped some samples — align by time
-                return np.interp(base_t, t, x)
+            if t.size >= 2:  # a field dropped samples — align by time; NaN outside
+                return np.interp(base_t, t, x, left=np.nan, right=np.nan)
             return np.full(n, np.nan)
 
         out[src] = {

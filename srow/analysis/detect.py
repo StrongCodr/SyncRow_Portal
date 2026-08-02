@@ -14,6 +14,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from .config import DEFAULT, AnalysisConfig
+
 
 @dataclass
 class Catch:
@@ -29,7 +31,8 @@ def _moving_average(x: np.ndarray, win: int) -> np.ndarray:
 
 
 def detect_catches(times_s: np.ndarray, signal: np.ndarray,
-                   fs: float, dominant_hz: float = 0.0) -> list[Catch]:
+                   fs: float, dominant_hz: float = 0.0,
+                   cfg: AnalysisConfig = DEFAULT) -> list[Catch]:
     """Detect catches as hysteresis-gated upward crossings of `signal`.
 
     Args:
@@ -37,6 +40,8 @@ def detect_catches(times_s: np.ndarray, signal: np.ndarray,
         signal:  (N,) projected sweep signal (z-scored).
         fs:      native sample rate (Hz).
         dominant_hz: stroke frequency (Hz); sizes the smoothing/detrend windows.
+                     NOTE: a single global rate — fragile if the rate changes a
+                     lot mid-piece (the refractory/window would be mis-sized).
     """
     times_s = np.asarray(times_s, dtype=float)
     signal = np.asarray(signal, dtype=float)
@@ -45,24 +50,24 @@ def detect_catches(times_s: np.ndarray, signal: np.ndarray,
         return []
 
     period_s = 1.0 / dominant_hz
-    # 1) smooth to the stroke band (~1/6 period) to kill feather/noise wiggles.
-    smooth_win = max(int(fs * period_s / 6.0), 1)
+    # 1) smooth to the stroke band to kill feather/noise wiggles.
+    smooth_win = max(int(fs * period_s * cfg.smooth_frac), 1)
     x_smooth = _moving_average(signal, smooth_win)
     # High-frequency residual removed by smoothing = the true noise floor for the
     # timing-uncertainty estimate (NOT the oscillation's own amplitude).
     resid = signal - x_smooth
     noise = 1.4826 * float(np.median(np.abs(resid - np.median(resid)))) or 1e-6
 
-    # 2) detrend with a running median spanning ~2 strokes (drift immunity).
-    med_win = max(int(fs * 2.0 * period_s), 5)
+    # 2) detrend with a running median spanning ~a couple strokes (drift immunity).
+    med_win = max(int(fs * cfg.detrend_periods * period_s), 5)
     if med_win % 2 == 0:
         med_win += 1
     x = x_smooth - pd.Series(x_smooth).rolling(med_win, center=True, min_periods=1).median().to_numpy()
 
     scale = 1.4826 * float(np.median(np.abs(x - np.median(x))))
     scale = scale or float(np.std(x)) or 1e-6
-    h = 0.4 * scale                       # hysteresis at ~0.4 sigma
-    refractory_s = 0.55 * period_s        # we KNOW the rate — reject double-detections
+    h = cfg.hysteresis_sigma * scale
+    refractory_s = cfg.refractory_frac * period_s
 
     catches: list[Catch] = []
     armed = False

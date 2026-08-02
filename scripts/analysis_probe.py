@@ -75,13 +75,17 @@ def main():
     print(f"matched strokes: {len(res.strokes)}")
     if res.strokes:
         seats = [s for s in res.rowers if s != res.reference]
-        print("\n  per-seat signed offset vs stroke (ms):  median [p10..p90]")
+        valid = [st for st in res.strokes if not st.flags]
+        print(f"\n  strokes: {len(res.strokes)} total, {len(valid)} valid (unflagged)")
+        print("  per-seat offset vs stroke (ms), VALID strokes:  median +/- unc  [p10..p90]")
         for s in seats:
-            vals = np.array([st.offsets_ms[s] for st in res.strokes if s in st.offsets_ms])
+            vals = np.array([st.offsets_ms[s] for st in valid if s in st.offsets_ms])
+            unc = np.array([st.uncertainty_ms[s] for st in valid if s in st.uncertainty_ms])
             if vals.size:
-                print(f"    {s:<18} n={vals.size:>4}  med={np.median(vals):>+7.1f}  "
+                print(f"    {s:<18} n={vals.size:>4}  med={np.median(vals):>+7.1f} "
+                      f"+/-{np.median(unc):>5.1f}  "
                       f"[{np.percentile(vals,10):>+7.1f} .. {np.percentile(vals,90):>+7.1f}]")
-        spreads = np.array([st.spread_ms for st in res.strokes])
+        spreads = np.array([st.spread_ms for st in valid]) if valid else np.array([0.0])
         print(f"\n  crew spread (ms): median={np.median(spreads):.1f}  "
               f"p90={np.percentile(spreads,90):.1f}")
 
