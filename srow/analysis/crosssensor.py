@@ -71,14 +71,17 @@ def analyze_cross(frames: dict[str, SensorFrame],
 
     period_s = 1.0 / frames[ref].dominant_hz if frames[ref].dominant_hz > 0 else 2.0
 
-    # Coarse per-seat lag from whole-waveform x-corr — centers the catch search so
-    # nearest-match can't alias to an adjacent stroke (the second estimator, §6.3).
-    coarse: dict[str, float] = {}
-    pl = pairwise_lags(frames, ref, others)
-    for s in others:
-        lag_ms = pl.get(s, (0.0, None))[1]
-        coarse[s] = (lag_ms / 1000.0) if lag_ms is not None else 0.0
-    tol = 0.30 * period_s  # tight window around the coarse-aligned expectation
+    # Per-stroke offset via WINDOWED cross-correlation on a shared grid. Catch-to-
+    # catch matching gives the right average but is noisy per-stroke (the crossing
+    # marks a slightly different phase each stroke); correlating one stroke's
+    # waveform per seat vs the stroke seat is the precise per-stroke estimator.
+    fs_grid = 100.0
+    cg = _common_grid(frames, [ref] + others, fs_grid)
+    if cg is None:
+        return CrossResult(reference=ref, rowers=rowers, excluded=excluded, strokes=[])
+    grid, sigs = cg
+    half = period_s / 2.0
+    max_lag = 0.30 * period_s
 
     strokes: list[StrokeSync] = []
     for i in range(1, len(ref_catches)):
@@ -86,17 +89,18 @@ def analyze_cross(frames: dict[str, SensorFrame],
         stroke_period = t_ref - float(ref_catches[i - 1])
         spm = 60.0 / stroke_period if stroke_period > 0 else 0.0
 
+        i0 = int(np.searchsorted(grid, t_ref - half))
+        i1 = int(np.searchsorted(grid, t_ref + half))
+        if i1 - i0 < 8:
+            continue
+        ref_win = sigs[ref][i0:i1]
+
         offsets = {ref: 0.0}
         uncs = {ref: 1000.0 * ref_unc.get(t_ref, 0.0)}
         for s in others:
-            ts = other_t[s]
-            if ts.size == 0:
-                continue
-            expected = t_ref + coarse[s]
-            j = int(np.argmin(np.abs(ts - expected)))
-            if abs(float(ts[j]) - expected) <= tol:
-                offsets[s] = float(ts[j] - t_ref) * 1000.0  # signed (+ = later)
-                uncs[s] = 1000.0 * other_unc[s].get(float(ts[j]), 0.0)
+            lag = gaussian_lag(ref_win, sigs[s][i0:i1], fs_grid, max_lag)
+            if lag is not None:
+                offsets[s] = lag * 1000.0  # signed ms (+ = seat later than stroke)
 
         vals = list(offsets.values())
         spread = (max(vals) - min(vals)) if len(vals) >= 2 else 0.0
