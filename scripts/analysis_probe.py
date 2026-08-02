@@ -52,27 +52,22 @@ def main():
           f"{'~spm':>6} {'catch':>6} {'unc_ms':>7} {'feath':>6}")
     print("-" * 72)
 
-    frames = {}
-    catches = {}
-    for src in sorted(by_source):
-        d = by_source[src]
-        rows = d["times_s"].size
-        frame = build_sensor_frame(d["times_s"], d["accel"], d["gyro"])
-        if frame is None:
-            print(f"{str(src):<10} {rows:>7}  frame build failed")
-            continue
-        cs = detect_catches(frame.times_s, frame.signal, frame.fs, frame.dominant_hz)
-        frames[src] = frame
-        catches[src] = cs
+    # Full engine: build frames -> sign-align -> detect -> cross-sensor.
+    from srow.analysis.engine import analyze_interval
+    ia = analyze_interval(by_source)
+    frames, catches, res = ia.frames, ia.catches, ia.cross
+
+    for src in sorted(frames):
+        frame, cs = frames[src], catches[src]
+        rows = by_source[src]["times_s"].size
         spm = frame.dominant_hz * 60.0
         unc_ms = 1000.0 * np.median([c.uncertainty_s for c in cs]) if cs else 0.0
         print(f"{str(src):<10} {rows:>7} {frame.fs:>6.1f} "
               f"{100*frame.variance_explained:>5.1f} {frame.dominant_hz:>6.3f} "
               f"{spm:>6.1f} {len(cs):>6} {unc_ms:>7.1f} "
               f"{'yes' if frame.used_feather_fallback else 'no':>6}")
-
-    # ── Cross-sensor: reference = stroke seat (highest index) ──
-    res = analyze_cross(frames, catches)
+    if ia.flipped:
+        print(f"  (sign-flipped to align with stroke: {ia.flipped})")
     print()
     print(f"reference (stroke): {res.reference}")
     print(f"rowers: {res.rowers}")

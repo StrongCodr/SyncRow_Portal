@@ -114,6 +114,29 @@ def _common_grid(frames: dict[str, SensorFrame], sources: list[str], fs: float):
     return grid, sigs
 
 
+def align_signs(frames: dict[str, SensorFrame], ref: str, sources: list[str],
+                fs: float = 50.0) -> list[str]:
+    """Flip any sensor whose synthetic axis is anti-phase to the reference
+    (RESEARCH.md §3.3 step 2), so every sensor's up-crossing marks the same
+    physical instant. Mutates frames[s].signal. Returns the flipped sources.
+    """
+    cg = _common_grid(frames, sources, fs)
+    if cg is None:
+        return []
+    _, sigs = cg
+    a = sigs[ref] - sigs[ref].mean()
+    flipped: list[str] = []
+    for s in sources:
+        if s == ref:
+            continue
+        b = sigs[s] - sigs[s].mean()
+        if float(np.dot(a, b)) < 0:
+            frames[s].signal = -frames[s].signal
+            frames[s].sweep = -frames[s].sweep
+            flipped.append(s)
+    return flipped
+
+
 def pairwise_lags(frames: dict[str, SensorFrame], ref: str, others: list[str],
                   fs: float = 50.0, max_lag_s: float = 1.0) -> dict[str, tuple[float, float | None]]:
     """Per seat: (zero-lag correlation sign, x-corr lag in ms) vs the reference.
