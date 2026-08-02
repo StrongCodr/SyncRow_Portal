@@ -8,7 +8,7 @@ auditable — every non-obvious method cites prior art.
 
 Scope note: **assume the raw data we have today (fields, rates, timestamps) is
 fixed.** All algorithm choices in §3–§7 must work with that. Improvements that
-require changing the sensor config or the phone app are collected in §9 (Further
+require changing the sensor config or the phone app are collected in §10 (Further
 Work — Sensor), deliberately separated so the pipeline does not depend on them.
 
 ---
@@ -64,7 +64,7 @@ Verified against `SyncRow/…/BleDeviceClient.kt` and the live InfluxDB.
   can enable the `0x50` TIME stream (`enableTimePacket` / `RSW_TIME_BIT`) but the
   handler explicitly **only counts arrivals and returns without decoding** — and
   enabling it competes for BLE bandwidth with the data stream. Decoding and using
-  it is the single highest-value app-side change (§9).
+  it is the single highest-value app-side change (§10).
 
 **Consequence for this pipeline:** we work with phone-arrival timestamps at a
 variable ~10–50 Hz effective rate, and we lean hard on interpolation and
@@ -174,7 +174,7 @@ intervals, multi-sensor contention, and OS scheduling put jitter — plausibly
 jitter is *per-sensor and uncorrelated*, so it lands directly in the cross-sensor
 offset we report. **No server-side math removes it**; we can only (a) reduce its
 effect with resampling/averaging, (b) quantify it as an error bar, and (c) fix it
-at the source later (§9, the 0x50 timestamp).
+at the source later (§10, the 0x50 timestamp).
 
 Implication: an async number of, say, 8 ms may be **below the resolution of the
 measurement chain.** Every reported offset must ship with an uncertainty (§6.4).
@@ -249,9 +249,16 @@ possibly-below-resolution (§4).
 
 Replace the current thin metric with a richer, honest one:
 
-- **Per-seat signed offset vs reference (ms):** who is early/late, not just the
+- **Reference = the stroke seat (highest seat index).** Rowing convention: the
+  crew follows stroke, so offsets are anchored on stroke — not on an arbitrary
+  "most-crossings" sensor (current offline behavior), which could itself be the
+  out-of-time rower. `stroke_offset ≡ 0` by definition. (The phone's
+  `StrokeAnalyzer` currently anchors on the *lowest* seat index — inverted; see
+  `docs/FIXES.md`.) A crew-centroid reference is also computed for the symmetric
+  spread summary, but stroke is the anchor for the coaching view.
+- **Per-seat signed offset vs stroke (ms):** who is early/late, not just the
   peak-to-peak spread. Same semantics as the phone's live lateness — app and
-  portal finally agree. (Current offline code stores only `max−min`, hiding who.)
+  portal agree. (Current offline code stores only `max−min`, hiding who.)
 - **Spread / dispersion** across the crew as a summary.
 - **Two independent estimators** per stroke: catch-based (§5) and
   correlation-based (§6.3); report both + their agreement.
@@ -267,7 +274,62 @@ Replace the current thin metric with a richer, honest one:
 
 ---
 
-## 8. Best-practices checklist (audit)
+## 8. Two tiers: real-time (phone) vs authoritative (portal)
+
+The **same algorithm** (§3–§7) runs in two tiers, but they are **separate
+implementations with different roles** — not shared code (phone is Kotlin, portal
+is Python). We accept that split deliberately:
+
+- **Portal = authoritative, system of record.** Full raw resolution, whole
+  interval available, second estimator (§6.3), timing uncertainty (§6.4). Nothing
+  the phone computes is ingested; the portal **recomputes from raw** independently.
+- **Phone = real-time, display-only, disposable.** Expected to be *generally*
+  accurate for live feedback, never authoritative. Because its output is never
+  stored or trusted downstream, it is free to be pragmatic and to **revise
+  itself** (backfill, §8.3).
+
+### 8.1 Causal windowing (whole-interval → trailing window)
+The portal computes the synthetic axis (§3.2) and median (§5.1) over the whole
+interval. The phone only has data up to *now*, so it runs the identical pipeline
+over a **trailing window** (target ~30 s). "Whole interval" is just an infinite
+window — make the engine windowed and both tiers share one conceptual path. The
+PCA axis stabilizes within a handful of strokes; it is the *timing* that is noisy
+early, surfaced honestly as wide uncertainty (§6.4), not hidden.
+
+### 8.2 Cold start + adaptive quality gate (warm-up rejection)
+The window must work from **stroke 1** and must **exclude non-rowing noise**
+(pre-piece maneuvering, spinning, backing — async through the roof, no periodic
+structure). So the window is **expanding-then-sliding** and **quality-gated**:
+
+- From stroke 1, compute on whatever history exists (2–3 strokes); confidence
+  grows as the window fills to ~30 s, then it slides.
+- A stroke is **admitted to the window only if it looks like rowing**: rotational
+  energy above a floor **and** a clean in-band period (stroke-band spectral peak /
+  low period-variance). Warm-up chaos fails the in-band test and is excluded from
+  the estimate window — but still shown, flagged, so the rower sees "not rowing
+  yet." This is the causal form of the portal's active-window detection (§ M7c of
+  the offline code).
+
+### 8.3 Backfill / repaint (display only)
+Early strokes render from a bad/empty window and look like trash. By ~stroke 3 the
+window holds real rowing and the axis/median have locked in. The phone then
+**re-runs the last few strokes against the now-good model and repaints them** —
+the live strip *heals backward* as confidence arrives (which also reads as the
+crew "locking in"). Legitimate precisely because it is display, not a record; cap
+the retro horizon to the trailing buffer, never the whole piece.
+
+### 8.4 Shared validity rule (the one thing that must NOT drift)
+The two tiers may have separate code, but they **must share one definition of
+"valid rowing stroke"** — the §8.2 gate criteria (in-band periodicity + energy
+floor + period-variance). If the phone proudly displays a stroke the portal
+discards, trust breaks. Pull this out as a **named spec** (`stroke_validity`) that
+both implementations cite; it is the only place where app/portal divergence would
+actually corrupt the product. Everything else can differ (windowing, backfill,
+second estimator) because only the portal is authoritative.
+
+---
+
+## 9. Best-practices checklist (audit)
 
 | Practice | Source | Status in current code | Pipeline |
 |---|---|---|---|
@@ -283,10 +345,12 @@ Replace the current thin metric with a richer, honest one:
 | Second detector / estimator (wavelet, x-corr) | [wavelet][wavelet], [tde][tde] | ✗ | ✓ |
 | Keep-and-flag (don't drop strokes) | product | ✗ drops | ✓ |
 | Allow N≥2 sensors | product | ✗ (needs 3) | ✓ |
+| Reference = stroke seat (highest index) | rowing convention | ✗ most-crossings; phone uses lowest | ✓ stroke |
+| Quality-gated window / warm-up rejection | §8.2 | partial (offline active-window) | ✓ both tiers |
 
 ---
 
-## 9. Further work — the sensor (LATER; requires app / firmware changes)
+## 10. Further work — the sensor (LATER; requires app / firmware changes)
 
 Deliberately out of scope for the current pipeline, but these are the biggest
 real-world accuracy levers, roughly in order of value:
@@ -318,10 +382,10 @@ real-world accuracy levers, roughly in order of value:
 
 ---
 
-## 10. Known limitations / honest caveats
+## 11. Known limitations / honest caveats
 
 - **BLE-arrival timestamps set a timing noise floor** (§4) that no server math
-  removes. Until §9.1, sub-20 ms async values are near/at the resolution limit;
+  removes. Until §10.1, sub-20 ms async values are near/at the resolution limit;
   always shown with uncertainty.
 - **Effective rate is variable** and can fall well below 50 Hz under multi-sensor
   BLE load — estimate per interval, never assume.
@@ -334,7 +398,7 @@ real-world accuracy levers, roughly in order of value:
 
 ---
 
-## 11. References
+## 12. References
 
 - [ds]: WitMotion WT9011DCL datasheet — https://www.sensor-test.de/assets/Fairs/2025/ProductNews/PDFs/WT9011DCL-Datasheet.pdf
 - [pca-knee]: Auto-calibrating knee flexion-extension axis via PCA on IMU angular velocity, *Sensors* 2018 — https://doi.org/10.3390/s18061882
