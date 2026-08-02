@@ -47,22 +47,26 @@ def detect_catches(times_s: np.ndarray, signal: np.ndarray,
     period_s = 1.0 / dominant_hz
     # 1) smooth to the stroke band (~1/6 period) to kill feather/noise wiggles.
     smooth_win = max(int(fs * period_s / 6.0), 1)
-    x = _moving_average(signal, smooth_win)
+    x_smooth = _moving_average(signal, smooth_win)
+    # High-frequency residual removed by smoothing = the true noise floor for the
+    # timing-uncertainty estimate (NOT the oscillation's own amplitude).
+    resid = signal - x_smooth
+    noise = 1.4826 * float(np.median(np.abs(resid - np.median(resid)))) or 1e-6
+
     # 2) detrend with a running median spanning ~2 strokes (drift immunity).
     med_win = max(int(fs * 2.0 * period_s), 5)
     if med_win % 2 == 0:
         med_win += 1
-    x = x - pd.Series(x).rolling(med_win, center=True, min_periods=1).median().to_numpy()
+    x = x_smooth - pd.Series(x_smooth).rolling(med_win, center=True, min_periods=1).median().to_numpy()
 
-    # Robust amplitude scale; hysteresis at ~0.4 sigma.
     scale = 1.4826 * float(np.median(np.abs(x - np.median(x))))
     scale = scale or float(np.std(x)) or 1e-6
-    h = 0.4 * scale
-    noise = scale
+    h = 0.4 * scale                       # hysteresis at ~0.4 sigma
+    refractory_s = 0.55 * period_s        # we KNOW the rate — reject double-detections
 
     catches: list[Catch] = []
-    armed = False               # only accept an up-crossing after a dip below -h
-    last_zero: float | None = None
+    armed = False
+    last_t: float | None = None
     last_i = 0
     for i in range(1, n):
         a, b = x[i - 1], x[i]
@@ -76,11 +80,13 @@ def detect_catches(times_s: np.ndarray, signal: np.ndarray,
                 continue
             frac = -a / (b - a) if (b - a) != 0 else 0.0
             t = times_s[i - 1] + frac * dt
+            if last_t is not None and (t - last_t) < refractory_s:
+                continue  # within one stroke of the previous catch — skip
             slope_per_s = (b - a) / dt
             unc = noise / abs(slope_per_s) if abs(slope_per_s) > 1e-9 else dt
             amp = float(np.ptp(x[last_i:i])) if i > last_i else 0.0
             catches.append(Catch(time_s=t, uncertainty_s=float(unc), amplitude=amp))
             armed = False
-            last_zero, last_i = t, i
+            last_t, last_i = t, i
 
     return catches
