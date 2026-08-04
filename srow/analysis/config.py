@@ -26,7 +26,7 @@ class AnalysisConfig:
 
     # --- quality flags ---
     drill_amp_frac: float = 0.6          # stroke flagged 'drill' if amp < this * median
-    low_conf_unc_frac: float = 0.10      # 'low_confidence' if offset unc > this * period
+    min_corr: float = 0.5                # 'low_confidence' if x-corr peak rho below this
 
 
 DEFAULT = AnalysisConfig()

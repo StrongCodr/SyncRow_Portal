@@ -46,13 +46,19 @@ def test_gaussian_lag_recovers_known_delay():
     a = np.sin(2 * np.pi * 1.0 * t)
     # b is `a` delayed (later) by 50 ms -> convention says POSITIVE lag.
     b_late = np.sin(2 * np.pi * 1.0 * (t - 0.05))
-    lag = gaussian_lag(a, b_late, FS, max_lag_s=0.2)
-    assert lag is not None and abs(lag - 0.05) < 0.005, lag
+    est = gaussian_lag(a, b_late, FS, max_lag_s=0.2)
+    assert est is not None and abs(est.lag_s - 0.05) < 0.005, est
+    assert est.rho > 0.95   # near-identical waveforms => high match confidence
 
     # b earlier by 30 ms -> NEGATIVE lag.
     b_early = np.sin(2 * np.pi * 1.0 * (t + 0.03))
-    lag2 = gaussian_lag(a, b_early, FS, max_lag_s=0.2)
-    assert lag2 is not None and abs(lag2 + 0.03) < 0.005, lag2
+    est2 = gaussian_lag(a, b_early, FS, max_lag_s=0.2)
+    assert est2 is not None and abs(est2.lag_s + 0.03) < 0.005, est2
+
+    # uncorrelated noise => low rho (would flag low_confidence).
+    rng = np.random.default_rng(7)
+    est3 = gaussian_lag(a, rng.normal(0, 1, t.size), FS, max_lag_s=0.2)
+    assert est3 is not None and abs(est3.rho) < 0.5, est3
 
 
 # ─── frame: recover a known rotation axis regardless of mounting ─────────────
