@@ -40,11 +40,11 @@ repo; everything else here.
 - [ ] Stroke-rate (SPM) chart + real sync chart from derived per-stroke data.
 - [ ] Raw IMU/speed/map stay display-only (200 ms agg never feeds a metric).
 
-## SyncRow app (phone)
-- [ ] Reference seat = highest index (stroke), not lowest (`StrokeAnalyzer`).
+## SyncRow app (phone) — repo: `../SyncRow`, branch `per-seat-quality-gating`
+- [~] **Per-seat real-time quality gating — SHARED spec (done on branch, needs on-device validation).** `SensorSyncStatus {CALIBRATING, OK, DEGRADED_SIGNAL, STALE}`; `StrokeAnalyzer.onSample(…, fresh)` skips held ticks (zero-order-hold repeats) so a plateau can't corrupt the median or fake a crossing; held > 30% of a stroke → `DEGRADED_SIGNAL` (mirrors `max_held_run_frac`), acquisition checked before pairing; only an OK seat shows a lateness, degraded/stale → "--", no other seat touched. UI shows "sensor dropout". Test: a frozen seat degrades only itself, boat stays live. **No JVM/JDK in the portal env — build+run `row/app` unit tests on-device.** See [[sensor-held-samples]].
+- [ ] **Reference seat convention — DECISION NEEDED, do not blind-flip.** App's INTERNAL `seatIndex` is inverted vs the portal: cox=0, stroke=1 (lowest), bow=N; `StrokeAnalyzer` picks the lowest = stroke, correct ONLY if callers order sensors stroke-last. Portal uses the highest user-facing seat label (`Seat 4`=stroke). Robust fix: select the phone reference by the user-facing seat number (parse label like the portal), not internal order — but confirm the app's seat-label→role mapping first.
 - [ ] Move to synthetic gyro-PCA axis (real-time tier); causal expanding→sliding window (~30 s).
-- [ ] Quality-gated window (warm-up rejection) + display-only backfill/repaint.
-- [ ] **Per-seat, per-stroke quality gating — SHARED spec with the portal.** A seat that spaces out (held/duplicated samples → `degraded_signal`) or whose waveform doesn't match (`low_confidence`) is dropped for THAT seat/stroke only; the rest of the boat and that seat's other strokes stay live. Never blank the whole crew because one seat/sensor drops. Mirror `crosssensor.seat_status` semantics (acquisition checked before match quality). See [[sensor-held-samples]].
+- [ ] Quality-gated window (warm-up rejection) + display-only backfill/repaint. (`low_confidence` match-quality analogue: phone has no x-corr yet — revisit with the synthetic-axis move.)
 - [ ] Confirm `seat` tag ordering unambiguous.
 
 ## Sensor / firmware — LATER (bench + app/firmware)
