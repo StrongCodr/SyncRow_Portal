@@ -5,13 +5,26 @@ of each other rowing seat vs stroke is estimated by WINDOWED cross-correlation o
 the projected sweep signals on a shared grid (robust to per-stroke catch-phase
 wander; catch-to-catch matching gives the right average but is noisy per stroke).
 Confidence and uncertainty come from the SAME estimator that produces the offset:
-the normalized cross-correlation peak rho. A stroke is `low_confidence` when the
-two waveforms simply don't match well at any lag (rho < min_corr), and the offset
-1-sigma follows from rho and the window length via a CRB-style relation. (Deriving
-uncertainty from catch-crossing slope — a different estimator than the x-corr that
-sets the offset — was the earlier mistake: it flagged good strokes.) Non-rowing
-sensors (cox / no in-band rhythm / too little sweep energy) are excluded. Sensors
-whose synthetic axis is anti-phase are sign-flipped first (`align_signs`).
+the normalized cross-correlation peak rho. The offset 1-sigma follows from rho and
+the window length via a CRB-style relation. (Deriving uncertainty from catch-
+crossing slope — a different estimator than the x-corr that sets the offset — was
+the earlier mistake: it flagged good strokes.)
+
+Quality is judged PER SEAT, PER STROKE — one bad seat never voids the boat's
+stroke (sensor-held-samples: bow units space out for seconds at a time; we keep
+every other seat and every other stroke). Each seat gets a `seat_status`:
+  OK             fresh data + waveforms match
+  DEGRADED       sensor spaced out: too much zero-order-hold in the window
+  LOW_CONF       fresh data but the waveform doesn't match (rho < min_corr)
+  REF_BAD        the stroke's own reference was unmeasurable
+The order matters: acquisition (held) is checked before match quality, so a held
+seat is called DEGRADED ("sensor"), not LOW_CONF ("rower"). Stroke-wide problems
+(implausible SPM, drill, a held reference) live in `flags`. Non-rowing sensors
+(cox / no in-band rhythm / too little sweep energy) are excluded up front; anti-
+phase sensors are sign-flipped first (`align_signs`).
+
+NOTE: this per-seat gating is a SHARED spec — the phone real-time tier must apply
+the same DEGRADED / LOW_CONF logic (see docs/FIXES.md, RESEARCH.md §8).
 """
 
 from __future__ import annotations
@@ -41,6 +54,19 @@ def is_rowing(frame: SensorFrame) -> bool:
     )
 
 
+# per-seat status (each seat judged on its OWN acquisition + match quality, so one
+# bad seat never voids the whole boat's stroke):
+OK = "ok"
+DEGRADED = "degraded_signal"     # sensor spaced out: too much zero-order-hold in window
+LOW_CONF = "low_confidence"      # fresh data but waveform doesn't match (rho < min_corr)
+REF_BAD = "reference_bad"        # the stroke's reference itself was unmeasurable
+
+# stroke-wide flags (properties of the reference / whole stroke, not any one seat):
+OUT_OF_RANGE = "out_of_range"    # implausible SPM
+DRILL = "drill"                  # low reference amplitude (paddle / pause drill)
+REF_DEGRADED = "reference_degraded"  # reference sensor held → whole stroke n/a
+
+
 @dataclass
 class StrokeSync:
     stroke_time_s: float                 # reference (stroke seat) catch time
@@ -48,9 +74,20 @@ class StrokeSync:
     offsets_ms: dict[str, float]         # per seat, signed vs stroke (stroke = 0)
     uncertainty_ms: dict[str, float]     # per-seat offset uncertainty (1-sigma, from x-corr)
     corr: dict[str, float]               # per-seat x-corr peak rho (match confidence)
-    spread_ms: float                     # max-min across matched seats
-    n_matched: int
-    flags: list[str] = field(default_factory=list)
+    seat_status: dict[str, str]          # per seat: OK / DEGRADED / LOW_CONF / REF_BAD
+    spread_ms: float                     # max-min across OK seats only
+    n_matched: int                       # count of OK seats
+    flags: list[str] = field(default_factory=list)  # stroke-wide (OUT_OF_RANGE/DRILL/REF_DEGRADED)
+
+    def usable_seats(self) -> list[str]:
+        """Seats whose offset this stroke is trustworthy (fresh + well-matched)."""
+        return [s for s, st in self.seat_status.items() if st == OK]
+
+    def is_piece_stroke(self) -> bool:
+        """True if this stroke belongs in piece-level aggregates (not a drill /
+        out-of-range / reference-void stroke). Individual seat quality is separate
+        — check seat_status per seat."""
+        return not any(f in self.flags for f in (OUT_OF_RANGE, DRILL, REF_DEGRADED))
 
 
 @dataclass
@@ -85,6 +122,25 @@ def _lag_uncertainty_s(rho: float, n: int, f_dom: float) -> float:
     if rho <= 0.0 or n < 2 or f_dom <= 0.0:
         return float("inf")
     return (1.0 / (2.0 * np.pi * f_dom)) * np.sqrt((1.0 - rho * rho) / (rho * rho)) / np.sqrt(n)
+
+
+def _held_run_frac(frame: SensorFrame, t0: float, t1: float) -> float:
+    """Longest zero-order-hold run within [t0,t1], as a fraction of the samples in
+    the window. High => the sensor held a flat value across much of this stroke, so
+    its waveform there is unmeasurable (sensor-side, before any rowing judgement)."""
+    i0 = int(np.searchsorted(frame.times_s, t0))
+    i1 = int(np.searchsorted(frame.times_s, t1))
+    n = i1 - i0
+    if n < 4:
+        return 1.0
+    held = frame.held[i0:i1]
+    # longest run of True
+    best = run = 0
+    for h in held:
+        run = run + 1 if h else 0
+        if run > best:
+            best = run
+    return best / n
 
 
 def analyze_cross(frames: dict[str, SensorFrame], catches: dict[str, list[Catch]],
@@ -127,33 +183,45 @@ def analyze_cross(frames: dict[str, SensorFrame], catches: dict[str, list[Catch]
             continue
         ref_win = sigs[ref][i0:i1]
 
-        offsets = {ref: 0.0}
-        uncs = {ref: 0.0}
-        corr = {ref: 1.0}
-        for s in others:
-            est = gaussian_lag(ref_win, sigs[s][i0:i1], cfg.xcorr_grid_hz, max_lag)
-            if est is None:
-                continue
-            offsets[s] = est.lag_s * 1000.0  # signed ms (+ = seat later than stroke)
-            corr[s] = est.rho
-            # uncertainty from the SAME x-corr peak that set the offset
-            uncs[s] = 1000.0 * _lag_uncertainty_s(est.rho, est.n, f_dom)
-
-        vals = list(offsets.values())
-        spread = (max(vals) - min(vals)) if len(vals) >= 2 else 0.0
-
+        # stroke-wide flags (properties of the reference / whole stroke)
         flags: list[str] = []
         if (f := validity.spm_flag(spm)):
             flags.append(f)
         if ref_amp.get(t_ref, median_amp) < cfg.drill_amp_frac * median_amp:
-            flags.append("drill")
-        seat_rhos = [r for k, r in corr.items() if k != ref]
-        if seat_rhos and min(seat_rhos) < cfg.min_corr:
-            flags.append("low_confidence")
+            flags.append(DRILL)
+        ref_degraded = _held_run_frac(frames[ref], t_ref - half, t_ref + half) > cfg.max_held_run_frac
+        if ref_degraded:
+            flags.append(REF_DEGRADED)
+
+        offsets = {ref: 0.0}
+        uncs = {ref: 0.0}
+        corr = {ref: 1.0}
+        status = {ref: REF_BAD if ref_degraded else OK}
+        for s in others:
+            # 1) sensor acquisition first: if this seat's window is mostly held, the
+            #    signal is unmeasurable regardless of what the rower did.
+            if _held_run_frac(frames[s], t_ref - half, t_ref + half) > cfg.max_held_run_frac:
+                status[s] = DEGRADED
+                continue
+            est = gaussian_lag(ref_win, sigs[s][i0:i1], cfg.xcorr_grid_hz, max_lag)
+            if est is None:
+                status[s] = DEGRADED
+                continue
+            offsets[s] = est.lag_s * 1000.0  # signed ms (+ = seat later than stroke)
+            corr[s] = est.rho
+            uncs[s] = 1000.0 * _lag_uncertainty_s(est.rho, est.n, f_dom)  # same x-corr peak
+            # 2) match quality: fresh data but the waveforms don't line up.
+            #    If the REFERENCE is degraded, no seat here is trustworthy either.
+            status[s] = REF_BAD if ref_degraded else (
+                LOW_CONF if est.rho < cfg.min_corr else OK)
+
+        ok_offsets = [offsets[s] for s, st in status.items() if st == OK and s in offsets]
+        spread = (max(ok_offsets) - min(ok_offsets)) if len(ok_offsets) >= 2 else 0.0
 
         strokes.append(StrokeSync(
             stroke_time_s=t_ref, spm=spm, offsets_ms=offsets, uncertainty_ms=uncs,
-            corr=corr, spread_ms=spread, n_matched=len(offsets), flags=flags,
+            corr=corr, seat_status=status, spread_ms=spread,
+            n_matched=sum(1 for st in status.values() if st == OK), flags=flags,
         ))
 
     return CrossResult(reference=ref, rowers=rowers, excluded=excluded, strokes=strokes)

@@ -43,6 +43,7 @@ class SensorFrame:
     fs: float                  # estimated native rate
     used_feather_fallback: bool  # PC1 was out-of-band; used PC2 instead
     stroke_axis_ok: bool       # a stroke-band axis was actually found (else PC1 kept blindly)
+    held: np.ndarray           # bool per sample: gyro row identical to previous (zero-order-hold)
 
 
 def _dominant_hz(sig: np.ndarray, fs: float) -> float:
@@ -79,6 +80,14 @@ def build_sensor_frame(times_s: np.ndarray, accel: np.ndarray, gyro: np.ndarray,
         return None
 
     fs = estimate_rate(times_s)
+
+    # zero-order-hold detection: a sample whose raw gyro row is bit-identical to
+    # the previous one is a held/duplicated packet, not fresh motion (see
+    # sensor-held-samples: bow units repeat values for up to ~1.3s). Detected on
+    # RAW gyro, before any processing, so downstream can exclude degraded windows.
+    held = np.zeros(times_s.size, dtype=bool)
+    if gyro.shape[0] > 1:
+        held[1:] = np.all(gyro[1:] == gyro[:-1], axis=1)
 
     g_mean = np.nanmean(accel, axis=0)
     gn = np.linalg.norm(g_mean)
@@ -124,4 +133,5 @@ def build_sensor_frame(times_s: np.ndarray, accel: np.ndarray, gyro: np.ndarray,
         dominant_hz=_project_dom_hz(G, sweep, times_s),
         sweep_energy=sweep_energy, fs=fs,
         used_feather_fallback=used_fallback, stroke_axis_ok=stroke_axis_ok,
+        held=held,
     )

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Diagnose the temporal distribution of flagged vs valid strokes.
+"""Per-seat, per-stroke quality distribution.
 
-Answers: are discarded strokes clumped (warm-up) or scattered (threshold
-misfiring)? Prints a per-stroke timeline, run-length stats, positional deciles,
-and SPM start-vs-piece.
+Under the per-seat model a stroke is not simply "valid" or "flagged" — each seat
+has its own status (ok / degraded_signal / low_confidence / reference_bad). This
+shows, per seat, where the good and bad strokes fall, plus how many usable seats
+we have per stroke (the thing that actually limits crew-spread coverage).
 
     python scripts/analysis_flags.py [intervalId]
 """
@@ -20,14 +21,15 @@ from srow.services import InfluxService
 from srow.analysis.load import load_raw_by_source
 from srow.analysis.engine import analyze_interval
 
+CH = {"ok": ".", "degraded_signal": "d", "low_confidence": "c", "reference_bad": "x"}
+
 
 def main():
     settings = load_settings()
     influx = InfluxService(settings)
     intervals = influx.fetch_interval_tags()
     if not intervals:
-        print("no intervals")
-        return
+        print("no intervals"); return
     target = sys.argv[1] if len(sys.argv) > 1 else intervals[0]["value"]
     iv = next((i for i in intervals if i["value"] == target), intervals[0])
 
@@ -37,60 +39,46 @@ def main():
         settings, iv["tag"], iv["value"],
         anchor - datetime.timedelta(days=2), anchor + datetime.timedelta(days=2),
     )
-    strokes = analyze_interval(by_source).cross.strokes
+    res = analyze_interval(by_source).cross
+    strokes = res.strokes
     if not strokes:
-        print("no strokes")
-        return
-
+        print("no strokes"); return
     n = len(strokes)
-    valid = [not st.flags for st in strokes]
+    seats = [s for s in res.rowers if s != res.reference]
 
-    def ch(st):
-        if not st.flags:
-            return "."
-        if "out_of_range" in st.flags:
-            return "r"
-        if "drill" in st.flags:
-            return "d"
-        if "low_confidence" in st.flags:
-            return "c"
-        return "?"
+    print(f"interval {iv['value']}   ref={res.reference}   strokes={n}")
+    piece = [st for st in strokes if st.is_piece_stroke()]
+    print(f"stroke-wide flags: {dict(Counter(f for st in strokes for f in st.flags))}  "
+          f"({len(piece)}/{n} piece strokes)\n")
 
-    timeline = "".join(ch(st) for st in strokes)
-    print(f"interval {iv['value']}   strokes={n}  valid={sum(valid)} ({100*sum(valid)/n:.0f}%)")
-    print("flag counts:", dict(Counter(f for st in strokes for f in st.flags)))
+    # per-seat status timeline + counts (one bad seat never voids the others)
+    print("per-seat status timeline (. ok  d degraded_signal  c low_confidence  x ref_bad):")
+    for s in seats:
+        line = "".join(CH.get(st.seat_status.get(s, "?"), "?") for st in strokes)
+        cnt = Counter(st.seat_status.get(s) for st in strokes)
+        ok = cnt.get("ok", 0)
+        print(f"\n  {s}   ok={ok} ({100*ok/n:.0f}%)  {dict(cnt)}")
+        for i in range(0, n, 100):
+            print(f"    {i:>4}: {line[i:i+100]}")
 
-    print("\ntimeline (. valid  d drill  r out-of-range  c low-conf):")
-    for i in range(0, n, 100):
-        print(f"  {i:>4}: {timeline[i:i+100]}")
+    # usable seats per stroke — how often do we actually get a crew spread?
+    print("\nusable (OK) seats per stroke:")
+    counts = Counter(st.n_matched for st in piece)
+    for k in sorted(counts, reverse=True):
+        frac = counts[k] / len(piece) if piece else 0
+        print(f"  {k} seats: {counts[k]:>4}  {100*frac:>4.0f}%  {'#' * int(30*frac)}")
 
-    # run-lengths: clumped => few long runs; scattered => many short runs
-    runs = []
-    cur, length = valid[0], 1
-    for v in valid[1:]:
-        if v == cur:
-            length += 1
-        else:
-            runs.append((cur, length))
-            cur, length = v, 1
-    runs.append((cur, length))
-    vlen = [l for v, l in runs if v]
-    flen = [l for v, l in runs if not v]
-    print(f"\nruns: {len(runs)}  (transitions={len(runs)-1})")
-    print(f"  valid runs: n={len(vlen):>3}  longest={max(vlen) if vlen else 0:>3}  median={int(np.median(vlen)) if vlen else 0}")
-    print(f"  flag  runs: n={len(flen):>3}  longest={max(flen) if flen else 0:>3}  median={int(np.median(flen)) if flen else 0}")
-
-    print("\nflagged fraction by position (deciles):")
-    fidx = np.array([not v for v in valid], dtype=float)
-    for d in range(10):
-        seg = fidx[d * n // 10:(d + 1) * n // 10]
-        frac = seg.mean() if seg.size else 0.0
-        print(f"  {d*10:>3}-{(d+1)*10:>3}%  {frac*100:>5.0f}%  {'#' * int(30 * frac)}")
-
-    spm = np.array([st.spm for st in strokes])
-    print(f"\nspm: first-10% med={np.median(spm[:max(n//10,1)]):.1f}  "
-          f"overall med={np.median(spm):.1f}  "
-          f"last-10% med={np.median(spm[-max(n//10,1):]):.1f}")
+    # is degradation clumped or scattered, per seat?
+    print("\nper-seat OK-run structure (clumped good runs vs scattered):")
+    for s in seats:
+        ok = [st.seat_status.get(s) == "ok" for st in strokes]
+        runs, cur, v = [], 1, ok[0]
+        for b in ok[1:]:
+            if b == v: cur += 1
+            else: runs.append((v, cur)); v, cur = b, 1
+        runs.append((v, cur))
+        okrun = [l for val, l in runs if val]
+        print(f"  {s:<18} transitions={len(runs)-1:>3}  longest OK run={max(okrun) if okrun else 0:>3}")
 
 
 if __name__ == "__main__":

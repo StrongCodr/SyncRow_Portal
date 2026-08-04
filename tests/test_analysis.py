@@ -130,3 +130,44 @@ def test_pipeline_recovers_injected_offsets():
         # sign must be right, not just magnitude
         if abs(off_s) > 0.02:
             assert np.sign(med) == np.sign(off_s * 1000.0), name
+
+
+# ─── one seat spaces out; the rest of the boat survives ─────────────────────
+
+def test_degraded_seat_isolated_not_boat_wide():
+    """A sensor freezing (zero-order-hold) for a stretch must degrade only THAT
+    seat's strokes in that stretch — never the other seats, never the whole boat."""
+    names = [f"Seat {i} (Seat {i})" for i in (1, 2, 3, 4)]
+    injected = {n: 0.0 for n in names}
+    axes = {names[0]: [0.3, 0.8, 0.5], names[1]: [-0.6, 0.2, 0.7],
+            names[2]: [0.5, -0.4, 0.7], names[3]: [0.2, 0.9, -0.3]}
+    grav = {n: [0.0, 0.0, 1.0] for n in names}
+    by_source = _make_crew(injected, axes, grav, seed=3)
+
+    # freeze Seat 2's gyro for an ~8 s stretch in the middle: the sensor spaces out.
+    victim = "Seat 2 (Seat 2)"
+    g = by_source[victim]["gyro"]
+    n = g.shape[0]
+    a, b = n // 2 - 400, n // 2 + 400
+    g[a + 1:b] = g[a]                     # zero-order hold -> held mask True
+
+    res = analyze_interval(by_source).cross
+    assert res.reference == "Seat 4 (Seat 4)"
+    assert victim in res.rowers          # still a rower (good majority)
+
+    vstatus = [st.seat_status.get(victim) for st in res.strokes]
+    assert "degraded_signal" in vstatus  # the frozen stretch is caught
+    assert "ok" in vstatus               # its good strokes are still kept
+
+    # a co-rower stays overwhelmingly OK straight through Seat 2's bad stretch
+    other = "Seat 3 (Seat 3)"
+    ok_other = sum(st.seat_status.get(other) == "ok" for st in res.strokes)
+    assert ok_other > 0.7 * len(res.strokes), ok_other
+
+    # and Seat 2's degraded strokes are clumped in the frozen middle, not scattered
+    deg_times = [st.stroke_time_s for st in res.strokes
+                 if st.seat_status.get(victim) == "degraded_signal"]
+    frozen_t0 = by_source[victim]["times_s"][a]
+    frozen_t1 = by_source[victim]["times_s"][b]
+    inside = sum(frozen_t0 - 2 <= t <= frozen_t1 + 2 for t in deg_times)
+    assert inside >= 0.8 * len(deg_times), (inside, len(deg_times))

@@ -24,9 +24,11 @@ class AnalysisConfig:
     xcorr_max_lag_frac: float = 0.30     # max searched lag as fraction of period
     align_grid_hz: float = 50.0          # grid for sign alignment / coarse lag
 
-    # --- quality flags ---
+    # --- quality flags (per seat, per stroke — a bad seat never voids the boat) ---
     drill_amp_frac: float = 0.6          # stroke flagged 'drill' if amp < this * median
-    min_corr: float = 0.5                # 'low_confidence' if x-corr peak rho below this
+    min_corr: float = 0.5                # seat 'low_confidence' if x-corr peak rho below this
+    max_held_run_frac: float = 0.30      # seat 'degraded_signal' if longest zero-order-hold
+                                         # run in the window exceeds this fraction of a stroke
 
 
 DEFAULT = AnalysisConfig()

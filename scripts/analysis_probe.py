@@ -75,19 +75,29 @@ def main():
     print(f"matched strokes: {len(res.strokes)}")
     if res.strokes:
         seats = [s for s in res.rowers if s != res.reference]
-        valid = [st for st in res.strokes if not st.flags]
-        print(f"\n  strokes: {len(res.strokes)} total, {len(valid)} valid (unflagged)")
-        print("  per-seat offset vs stroke (ms), VALID strokes:  median +/- unc  [p10..p90]")
+        from collections import Counter
+        piece = [st for st in res.strokes if st.is_piece_stroke()]
+        print(f"\n  strokes: {len(res.strokes)} total, {len(piece)} piece strokes "
+              f"(not drill/out-of-range/ref-void)")
+        print("  per-seat offset vs stroke (ms), that seat's OK strokes:  median +/- unc  [p10..p90]  | status mix")
         for s in seats:
-            vals = np.array([st.offsets_ms[s] for st in valid if s in st.offsets_ms])
-            unc = np.array([st.uncertainty_ms[s] for st in valid if s in st.uncertainty_ms])
+            # per-seat, per-stroke: a bad seat here never drops another seat
+            ok = [st for st in piece if st.seat_status.get(s) == "ok"]
+            vals = np.array([st.offsets_ms[s] for st in ok if s in st.offsets_ms])
+            unc = np.array([st.uncertainty_ms[s] for st in ok if s in st.uncertainty_ms])
+            mix = Counter(st.seat_status.get(s, "?") for st in piece)
+            mixs = " ".join(f"{k}={v}" for k, v in mix.most_common())
             if vals.size:
                 print(f"    {s:<18} n={vals.size:>4}  med={np.median(vals):>+7.1f} "
                       f"+/-{np.median(unc):>5.1f}  "
-                      f"[{np.percentile(vals,10):>+7.1f} .. {np.percentile(vals,90):>+7.1f}]")
-        spreads = np.array([st.spread_ms for st in valid]) if valid else np.array([0.0])
-        print(f"\n  crew spread (ms): median={np.median(spreads):.1f}  "
-              f"p90={np.percentile(spreads,90):.1f}")
+                      f"[{np.percentile(vals,10):>+7.1f} .. {np.percentile(vals,90):>+7.1f}]  | {mixs}")
+            else:
+                print(f"    {s:<18} n=   0  (no OK strokes)  | {mixs}")
+        # crew spread uses only strokes with >=2 usable seats
+        spreads = np.array([st.spread_ms for st in piece if st.n_matched >= 2])
+        if spreads.size:
+            print(f"\n  crew spread over OK seats (ms): median={np.median(spreads):.1f}  "
+                  f"p90={np.percentile(spreads,90):.1f}  ({spreads.size} strokes with >=2 OK seats)")
 
         # Cross-correlation diagnostic: waveform lag (phase-independent) + sign.
         print("\n  x-corr vs stroke (whole-waveform):  corr-sign   lag(ms)")
