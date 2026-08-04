@@ -14,8 +14,11 @@ repo; everything else here.
 - [x] Per-crossing timing uncertainty (true high-freq noise / slope).
 - [x] Reference = stroke seat (highest index); signed per-seat offset + crew spread. **Two estimators agree.**
 - [x] Allow N≥2 (rowing sensors only; cox auto-excluded via stroke-band check).
-- [x] keep-and-flag: `drill` / `low_confidence` / `out_of_range` per stroke (excluded from valid-stroke aggregates, not dropped).
-- [x] Per-seat offset uncertainty (quadrature of catch uncertainties); stop reporting sub-jitter precision.
+- [x] keep-and-flag: `drill` / `out_of_range` / `reference_degraded` per stroke (stroke-wide); excluded from aggregates, not dropped.
+- [x] **Per-seat, per-stroke `seat_status`** (`ok`/`degraded_signal`/`low_confidence`/`reference_bad`): one spaced-out seat never voids the boat's stroke. Acquisition (held-run) checked before match quality, so "sensor spaced out" ≠ "rower spaced out". Aggregates use each seat's OK strokes independently. Real interval: 579/629 strokes keep ≥2 usable seats.
+- [x] `degraded_signal` = zero-order-hold detector (`SensorFrame.held` on raw gyro; longest run > `max_held_run_frac` of the stroke) — the [[sensor-held-samples]] failure mode, named distinctly from a genuine waveform mismatch.
+- [x] Confidence + uncertainty from the x-corr peak ρ (same estimator that sets the offset), not catch-slope; `min_corr` gate.
+- [x] Per-seat offset uncertainty (CRB-style from ρ + window); stop reporting sub-jitter precision.
 - [x] All magic numbers in `config.AnalysisConfig`; local per-stroke window (rate-change robustness).
 - [x] Tests: `tests/test_analysis.py` — gaussian_lag sign, axis recovery, non-rowing exclusion, and **synthetic ground-truth** (recovers injected offsets ±sign).
 - [ ] **HARDWARE ground-truth bench test** (two sensors tapped together / known injected delay) — synthetic proves the math; real rig still unproven.
@@ -41,6 +44,7 @@ repo; everything else here.
 - [ ] Reference seat = highest index (stroke), not lowest (`StrokeAnalyzer`).
 - [ ] Move to synthetic gyro-PCA axis (real-time tier); causal expanding→sliding window (~30 s).
 - [ ] Quality-gated window (warm-up rejection) + display-only backfill/repaint.
+- [ ] **Per-seat, per-stroke quality gating — SHARED spec with the portal.** A seat that spaces out (held/duplicated samples → `degraded_signal`) or whose waveform doesn't match (`low_confidence`) is dropped for THAT seat/stroke only; the rest of the boat and that seat's other strokes stay live. Never blank the whole crew because one seat/sensor drops. Mirror `crosssensor.seat_status` semantics (acquisition checked before match quality). See [[sensor-held-samples]].
 - [ ] Confirm `seat` tag ordering unambiguous.
 
 ## Sensor / firmware — LATER (bench + app/firmware)

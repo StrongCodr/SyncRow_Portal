@@ -327,6 +327,29 @@ both implementations cite; it is the only place where app/portal divergence woul
 actually corrupt the product. Everything else can differ (windowing, backfill,
 second estimator) because only the portal is authoritative.
 
+### 8.5 Per-seat, per-stroke quality gating (shared spec, both tiers)
+Quality is judged **per seat, per stroke** — never per boat. A crew of eight has
+eight independent sensors on eight independent people; a single sensor spacing out
+(BLE starvation → zero-order-held samples, §6/§10; see the held-sample finding) or
+a single rower catching a crab must degrade **only that seat's affected strokes**,
+leaving every other seat and every other stroke live. Two per-seat states:
+
+- `degraded_signal` — **acquisition** failure: the sensor's window is mostly
+  held/duplicated samples (`SensorFrame.held`, longest hold-run > `max_held_run_frac`
+  of the stroke). Unmeasurable regardless of rowing.
+- `low_confidence` — **match** failure: fresh data, but the seat's waveform doesn't
+  cross-correlate with the reference (peak ρ < `min_corr`).
+
+Order matters: check acquisition **before** match, so a held seat reads as "the
+sensor spaced out," not "the rower rowed badly." A held **reference** is the one
+whole-stroke void (`reference_degraded` / `reference_bad` seats) — everything is
+measured relative to stroke, so a bad reference can't be rescued per-seat.
+Aggregates (median offset, crew spread) consume each seat's `ok` strokes
+independently. This gating is part of the shared spec: the portal implements it in
+`crosssensor.seat_status`; **the phone real-time tier must mirror the same states
+and the same acquisition-before-match order** so a seat the phone shows is a seat
+the portal would keep.
+
 ---
 
 ## 9. Best-practices checklist (audit)
@@ -344,6 +367,8 @@ second estimator) because only the portal is authoritative.
 | Report timing uncertainty | §4 | ✗ | ✓ |
 | Second detector / estimator (wavelet, x-corr) | [wavelet][wavelet], [tde][tde] | ✗ | ✓ |
 | Keep-and-flag (don't drop strokes) | product | ✗ drops | ✓ |
+| Per-seat quality gating (one bad seat ≠ dead boat) | §8.5, product | ✗ per-stroke/all-seats | ✓ per-seat status (both tiers) |
+| Held/duplicated-sample detection (`degraded_signal`) | held-sample finding | ✗ | ✓ (both tiers) |
 | Allow N≥2 sensors | product | ✗ (needs 3) | ✓ |
 | Reference = stroke seat (highest index) | rowing convention | ✗ most-crossings; phone uses lowest | ✓ stroke |
 | Quality-gated window / warm-up rejection | §8.2 | partial (offline active-window) | ✓ both tiers |
