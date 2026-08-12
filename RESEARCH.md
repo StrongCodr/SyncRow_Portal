@@ -345,10 +345,25 @@ sensor spaced out," not "the rower rowed badly." A held **reference** is the one
 whole-stroke void (`reference_degraded` / `reference_bad` seats) — everything is
 measured relative to stroke, so a bad reference can't be rescued per-seat.
 Aggregates (median offset, crew spread) consume each seat's `ok` strokes
-independently. This gating is part of the shared spec: the portal implements it in
-`crosssensor.seat_status`; **the phone real-time tier must mirror the same states
-and the same acquisition-before-match order** so a seat the phone shows is a seat
-the portal would keep.
+independently.
+
+**Portal vs phone — what actually transfers (do not overstate this as a "mirror").**
+The portal is authoritative and implements the full spec in `crosssensor.seat_status`.
+The phone real-time tier implements a **subset/approximation**, and the two can and
+do differ:
+- `degraded_signal` (acquisition) transfers in spirit but not identically: portal =
+  longest hold-run inside a stroke window; phone = time since the last fresh BLE
+  sample > `HELD_RUN_FRAC` of a stroke. Both flag "the sensor spaced out."
+- `low_confidence` (match quality) has **no phone equivalent** — the phone has no
+  cross-correlation, so a fresh seat rowing a genuinely different rhythm reads OK on
+  the phone while the portal would discard it. This is a real §8.4 gap: the phone can
+  display a stroke the portal drops. Accepted because only the portal is authoritative;
+  the phone value is a live estimate, not a verdict.
+- The stroke-band (`STROKE_BAND_HZ`) is **not shared in code** — the phone selects a
+  channel by variance and never applies the band. "Shared spec" here means shared
+  *intent*, enforced only in the portal.
+The single hard invariant both tiers DO honour: quality is per-seat, so one bad seat
+never blanks the crew.
 
 ---
 
