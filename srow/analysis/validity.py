@@ -9,9 +9,10 @@ live here.
 
 from __future__ import annotations
 
-# Rowing stroke band: 12–45 spm = 0.2–0.75 Hz. Anything periodic here is a stroke;
-# the feather/square roll and warm-up chaos live outside it.
-STROKE_BAND_HZ: tuple[float, float] = (0.2, 0.75)
+# Rowing stroke band: 12–50 spm = 0.2–0.84 Hz. Anything periodic here is a stroke;
+# the feather/square roll and warm-up chaos live outside it. Upper bound matches
+# SPM_MAX (was 0.75 Hz/45 spm — raised so bench/sprint cadence up to 50 spm engages).
+STROKE_BAND_HZ: tuple[float, float] = (0.2, 0.84)
 
 # Minimum sweep amplitude (std of the projected sweep signal, deg/s, BEFORE
 # z-scoring) for a sensor to count as "rowing" vs. paddling/positioning/cox.
