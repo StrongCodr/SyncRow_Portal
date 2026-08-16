@@ -161,6 +161,7 @@ def interval(request: Request, tag: str, value: str):
             "n": len(df) if df is not None else 0,
             "offsets_json": json.dumps(charts.offsets_fig(cross)),
             "offsets_summary": charts.offsets_summary(cross),
+            "offsets_boat": charts.offsets_boat(cross),
             "speed_json": json.dumps(charts.speed_fig(gdf)),
             "imu_json": json.dumps(charts.imu_fig(df)),
             "track_json": json.dumps(charts.track_data(gdf)),

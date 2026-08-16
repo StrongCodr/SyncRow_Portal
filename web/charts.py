@@ -137,6 +137,19 @@ def offsets_summary(cross) -> list[dict]:
     return out
 
 
+def offsets_boat(cross) -> str | None:
+    """Boat-level headline: the crew SPREAD (widest gap between any two seats) per
+    stroke, summarized as median and p90. This is the single 'how together is the
+    boat' number — lower is tighter."""
+    if cross is None or cross.reference is None or not cross.strokes:
+        return None
+    spreads = [st.spread_ms for st in cross.strokes
+               if st.is_piece_stroke() and st.n_matched >= 2]
+    if not spreads:
+        return None
+    return f"{np.median(spreads):.0f} ms typical, {np.percentile(spreads, 90):.0f} ms worst"
+
+
 def speed_fig(gdf) -> dict | None:
     """Boat speed (km/h) over time from GPS."""
     if gdf is None or len(gdf) == 0 or "speed" not in gdf.columns:

@@ -6,6 +6,9 @@
 
   <section>
     <h4 class="text-sm font-medium text-subtle mb-1">Timing vs stroke (ms behind + / ahead −)</h4>
+    {% if offsets_boat %}
+    <div class="text-sm mb-1">Boat spread: <span class="font-medium">{{ offsets_boat }}</span></div>
+    {% endif %}
     {% if offsets_summary %}
     <div class="flex flex-wrap gap-x-5 gap-y-1 mb-2 text-sm">
       {% for r in offsets_summary %}
