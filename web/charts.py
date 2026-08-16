@@ -112,8 +112,8 @@ def offsets_fig(cross):
     if len(data) < 2:  # only the baseline — nothing measured
         return None
     layout = {**_BASE_LAYOUT, "height": 260,
-              "xaxis": {"title": "time"},
-              "yaxis": {"title": "ms behind (+) / ahead (−) vs stroke", "zeroline": True}}
+              "xaxis": {"title": "time (one point per stroke)"},
+              "yaxis": {"title": "latency ms — behind (+) / ahead (−)", "zeroline": True}}
     return {"data": data, "layout": layout}
 
 
