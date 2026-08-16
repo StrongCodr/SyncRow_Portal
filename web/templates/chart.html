@@ -5,8 +5,18 @@
   </div>
 
   <section>
-    <h4 class="text-sm font-medium text-subtle mb-1">Synchronicity</h4>
-    <div id="chart-sync" style="height:240px;"></div>
+    <h4 class="text-sm font-medium text-subtle mb-1">Timing vs stroke (ms behind + / ahead −)</h4>
+    {% if offsets_summary %}
+    <div class="flex flex-wrap gap-x-5 gap-y-1 mb-2 text-sm">
+      {% for r in offsets_summary %}
+      <span class="text-text">{{ r.seat }}:
+        <span class="font-medium">{{ r.text }}</span>
+        {% if r.n %}<span class="text-subtle">({{ r.n }} strokes)</span>{% endif %}
+      </span>
+      {% endfor %}
+    </div>
+    {% endif %}
+    <div id="chart-offsets" style="height:260px;"></div>
   </section>
 
   <section>
@@ -36,9 +46,9 @@
           el.innerHTML = '<div class="text-subtle text-sm p-3">no data</div>';
         }
       }
-      plot('chart-sync',  {{ sync_json  | safe }});
-      plot('chart-speed', {{ speed_json | safe }});
-      plot('chart-imu',   {{ imu_json   | safe }});
+      plot('chart-offsets', {{ offsets_json | safe }});
+      plot('chart-speed',   {{ speed_json   | safe }});
+      plot('chart-imu',     {{ imu_json     | safe }});
       if (window.restyleCharts) restyleCharts();
 
       // Linked zoom: pan/zoom the time axis on any chart -> the others follow.

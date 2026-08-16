@@ -11,8 +11,10 @@ Run:
     uvicorn web.main:app --host 127.0.0.1 --port 5006   # prod (behind nginx TLS)
 """
 
+import datetime as dt
 import json
 import os
+import re
 from pathlib import Path
 
 from fastapi import FastAPI, Form, Request
@@ -22,6 +24,8 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from srow.config import load_settings
 from srow.services import InfluxService, LocationService
+from srow.analysis.load import load_raw_by_source
+from srow.analysis.engine import analyze_interval
 from web import charts
 
 BASE_DIR = Path(__file__).parent
@@ -105,6 +109,28 @@ def index(request: Request):
     )
 
 
+def _analyze_offsets(tag: str, value: str):
+    """Run the real analysis engine on RAW data for this interval and return its
+    CrossResult (per-seat ms offsets). Heavy (streaming raw load + PCA + x-corr);
+    on-demand for now, TODO move to the precompute worker. Returns None on failure
+    so the rest of the page still renders. Window: ±2 days around the interval's
+    name epoch (name/data clocks differ ~9h; a tight window misses the data)."""
+    m = re.search(r"(\d{13})", value)
+    if not m:
+        return None
+    anchor = dt.datetime.fromtimestamp(int(m.group(1)) / 1000, tz=dt.timezone.utc)
+    try:
+        by_source = load_raw_by_source(
+            settings, tag, value,
+            anchor - dt.timedelta(days=2), anchor + dt.timedelta(days=2),
+        )
+        if not by_source:
+            return None
+        return analyze_interval(by_source).cross
+    except Exception:
+        return None
+
+
 @app.get("/interval", response_class=HTMLResponse)
 def interval(request: Request, tag: str, value: str):
     if not _user(request):
@@ -124,12 +150,17 @@ def interval(request: Request, tag: str, value: str):
     if (df is None or df.empty) and (gdf is None or len(gdf) == 0):
         return HTMLResponse('<div class="text-subtle">No data for this interval.</div>')
 
+    # Real timing offsets (ms) from the raw-resolution engine — replaces the old
+    # unitless synchronicity score.
+    cross = _analyze_offsets(tag, value)
+
     return templates.TemplateResponse(
         request=request, name="chart.html",
         context={
             "value": value,
             "n": len(df) if df is not None else 0,
-            "sync_json": json.dumps(charts.sync_fig(df)),
+            "offsets_json": json.dumps(charts.offsets_fig(cross)),
+            "offsets_summary": charts.offsets_summary(cross),
             "speed_json": json.dumps(charts.speed_fig(gdf)),
             "imu_json": json.dumps(charts.imu_fig(df)),
             "track_json": json.dumps(charts.track_data(gdf)),

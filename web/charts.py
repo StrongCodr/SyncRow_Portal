@@ -62,29 +62,79 @@ def imu_fig(df: pd.DataFrame | None):
     return {"data": data, "layout": layout}
 
 
-def sync_fig(df: pd.DataFrame | None):
-    """Synchronicity over time: z-score each sensor, spread across sensors, 1/(1+spread)."""
-    if df is None or df.empty or "source" not in df.columns:
+def offsets_fig(cross):
+    """Per-seat catch-timing offset vs the stroke seat, in milliseconds, over the
+    piece. Positive = that seat catches AFTER stroke (behind); negative = before
+    (ahead); the stroke seat is the flat 0 line. This replaces the old unitless
+    1/(1+spread) 'synchronicity' score — see `IntervalAnalysis` / `analyze_interval`.
+
+    `cross` is the engine's CrossResult (srow.analysis.crosssensor). Returns None
+    if there isn't enough to plot.
+    """
+    if cross is None or cross.reference is None or not cross.strokes:
         return None
-    d, field = _imu_field(df)
-    if field is None:
+    ref = cross.reference
+    seats = [s for s in cross.rowers if s != ref]
+    if not seats:
         return None
-    pivot = d.pivot_table(index="time", columns="source", values=field, aggfunc="first")
-    if pivot.shape[1] < 2:  # need >= 2 sensors to have a sync metric
+
+    import datetime as _dt
+
+    def _ts(epoch_s: float) -> str:
+        return _dt.datetime.fromtimestamp(epoch_s, tz=_dt.timezone.utc).isoformat()
+
+    data = []
+    # flat zero baseline = the stroke seat (everything is measured against it)
+    piece = [st for st in cross.strokes if st.is_piece_stroke()]
+    if len(piece) < 2:
         return None
-    normalized = pivot.apply(lambda x: (x - x.mean()) / x.std() if x.std() > 0 else x * 0)
-    spread = normalized.std(axis=1)
-    score = 1.0 / (1.0 + spread)
-    data = [{
-        "type": "scatter", "mode": "lines", "name": "sync",
-        "x": _times(score.index), "y": _clean(score.values),
-        "line": {"width": 1.6, "color": "#9ece6a"},
-        "fill": "tozeroy", "fillcolor": "rgba(158,206,106,0.12)",
-    }]
-    layout = {**_BASE_LAYOUT, "height": 240, "showlegend": False,
+    t0, t1 = _ts(piece[0].stroke_time_s), _ts(piece[-1].stroke_time_s)
+    data.append({
+        "type": "scatter", "mode": "lines", "name": f"{ref} (stroke)",
+        "x": [t0, t1], "y": [0, 0],
+        "line": {"width": 1.4, "color": "#9aa5b1", "dash": "dot"},
+        "hoverinfo": "skip",
+    })
+    for i, s in enumerate(seats):
+        # only this seat's trustworthy strokes (its own OK status)
+        xs, ys = [], []
+        for st in piece:
+            if st.seat_status.get(s) == "ok" and s in st.offsets_ms:
+                xs.append(_ts(st.stroke_time_s))
+                ys.append(round(st.offsets_ms[s], 1))
+        if xs:
+            data.append({
+                "type": "scatter", "mode": "lines+markers", "name": str(s),
+                "x": xs, "y": ys,
+                "line": {"width": 1.6, "color": PALETTE[i % len(PALETTE)]},
+                "marker": {"size": 4},
+            })
+    if len(data) < 2:  # only the baseline — nothing measured
+        return None
+    layout = {**_BASE_LAYOUT, "height": 260,
               "xaxis": {"title": "time"},
-              "yaxis": {"title": "sync (1 = perfect)", "range": [0, 1]}}
+              "yaxis": {"title": "ms behind (+) / ahead (−) vs stroke", "zeroline": True}}
     return {"data": data, "layout": layout}
+
+
+def offsets_summary(cross) -> list[dict]:
+    """Per-seat headline numbers for the offset chart: median ms behind/ahead over
+    that seat's trustworthy strokes, plus how many strokes backed it."""
+    if cross is None or cross.reference is None or not cross.strokes:
+        return []
+    ref = cross.reference
+    out = []
+    piece = [st for st in cross.strokes if st.is_piece_stroke()]
+    for s in [x for x in cross.rowers if x != ref]:
+        vals = [st.offsets_ms[s] for st in piece
+                if st.seat_status.get(s) == "ok" and s in st.offsets_ms]
+        if not vals:
+            out.append({"seat": str(s), "text": "no clean strokes", "n": 0})
+            continue
+        med = float(np.median(vals))
+        word = "behind" if med >= 0 else "ahead"
+        out.append({"seat": str(s), "text": f"{abs(med):.0f} ms {word}", "n": len(vals)})
+    return out
 
 
 def speed_fig(gdf) -> dict | None:
