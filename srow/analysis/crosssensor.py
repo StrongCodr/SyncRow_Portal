@@ -281,8 +281,21 @@ class LagEst:
 def gaussian_lag(sig_ref: np.ndarray, sig_other: np.ndarray, fs: float,
                  max_lag_s: float) -> LagEst | None:
     """Sub-sample lag of `sig_other` vs `sig_ref` by cross-correlation with
-    GAUSSIAN peak interpolation, plus the normalized peak correlation (the match
-    confidence). RESEARCH.md §6.3.
+    log-parabolic ("Gaussian") peak interpolation, plus the normalized peak
+    correlation rho (the match confidence). RESEARCH.md §6.3.
+
+    SHARED SPEC — this is the phone's StrokeAnalyzer.crossLag in numpy form; keep
+    the two in step. The offset is argmax over the RAW correlation (a constant
+    scale never moves the peak, so window edges do not bias it); rho is the Pearson
+    correlation AT the peak lag over the OVERLAPPING region only (per-lag
+    normalization), so it stays honest at large lags where dividing by one whole-
+    window norm (na*nb) would understate the match.
+
+    Known, accepted, SHARED with the phone: the log-parabolic sub-sample step is
+    slightly CONSERVATIVE on the asymmetric (fast-drive/slow-recovery) stroke peak —
+    it pulls large offsets a few % toward zero (an injected 50 ms reads ~42). The
+    integer-grid peak is unbiased; interpolation trades a little magnitude for sub-
+    sample resolution. Both tiers run the identical step, so they never disagree.
 
     Convention: POSITIVE lag => sig_other lags (is later than) sig_ref. Verified
     by test_gaussian_lag_recovers_known_delay.
@@ -294,9 +307,9 @@ def gaussian_lag(sig_ref: np.ndarray, sig_other: np.ndarray, fs: float,
         return None
     a = a[:n] - a[:n].mean()
     b = b[:n] - b[:n].mean()
-    na, nb = np.linalg.norm(a), np.linalg.norm(b)
-    if na <= 0 or nb <= 0:
+    if np.linalg.norm(a) <= 0 or np.linalg.norm(b) <= 0:
         return None
+    # corr[lag] = sum_k b[k]*a[k-lag]; index i in "full" output is lag = i-(n-1).
     corr = np.correlate(b, a, mode="full")
     lags = np.arange(-n + 1, n)
     max_lag = int(max_lag_s * fs)
@@ -305,7 +318,15 @@ def gaussian_lag(sig_ref: np.ndarray, sig_other: np.ndarray, fs: float,
     if corr.size < 3:
         return None
     k = int(np.argmax(corr))
-    rho = float(corr[k] / (na * nb))          # match confidence at the peak lag
+    lag = int(lags[k])
+    # rho = normalized peak correlation over the peak lag's OVERLAP only.
+    if lag >= 0:
+        am, bm = a[: n - lag], b[lag:]
+    else:
+        am, bm = a[-lag:], b[: n + lag]
+    den = np.linalg.norm(am) * np.linalg.norm(bm)
+    rho = float(np.dot(bm, am) / den) if den > 0 else 0.0
+    # log-parabolic sub-sample peak (valid only where the three points are positive)
     if k == 0 or k == corr.size - 1 or corr[k] <= 0:
         return LagEst(float(lags[k]) / fs, rho, n)
     ym1, y0, yp1 = corr[k - 1], corr[k], corr[k + 1]

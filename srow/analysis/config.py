@@ -12,6 +12,13 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class AnalysisConfig:
+    # --- synthetic frame / adaptive axis (frame.py) ---
+    # The axis is recomputed over a TRAILING window at refresh anchors, so a mid-
+    # session sensor re-orientation re-locks the axis instead of one whole-interval
+    # PCA blending two mountings. Mirrors the phone (WINDOW_MS / AXIS_REFRESH_MS).
+    axis_window_s: float = 10.0          # trailing window the axis PCA runs over
+    axis_refresh_s: float = 0.5          # recompute the axis this often
+
     # --- catch detection (detect.py) ---
     smooth_frac: float = 1.0 / 6.0       # smoothing window as fraction of stroke period
     detrend_periods: float = 2.0         # running-median window = this * period
