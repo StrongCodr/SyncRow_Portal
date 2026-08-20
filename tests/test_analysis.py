@@ -10,8 +10,9 @@ per mount, BLE jitter — still require a bench test; see RESEARCH §4, §9.)
 import numpy as np
 
 from srow.analysis.crosssensor import gaussian_lag, is_rowing
+from srow.analysis.detect import detect_catches
 from srow.analysis.engine import analyze_interval
-from srow.analysis.frame import build_sensor_frame
+from srow.analysis.frame import _axis, build_sensor_frame
 
 FS = 100.0
 DUR = 60.0
@@ -171,3 +172,61 @@ def test_degraded_seat_isolated_not_boat_wide():
     frozen_t1 = by_source[victim]["times_s"][b]
     inside = sum(frozen_t0 - 2 <= t <= frozen_t1 + 2 for t in deg_times)
     assert inside >= 0.8 * len(deg_times), (inside, len(deg_times))
+
+
+# ─── adaptive axis re-locks after a mid-piece re-orientation (RESEARCH §3) ──────
+
+def test_adaptive_axis_relocks_after_reorientation():
+    """A sensor bumped mid-piece: its stroke rotation axis moves ~80° at the midpoint.
+    The adaptive per-window axis must re-lock (each half stays a clean 1-D oscillation),
+    where a single whole-interval PCA would blend the two mounts and lose variance. The
+    phone asserts the same behaviour via getLateness (test in StrokeAnalyzerTest.kt)."""
+    fs, freq, dur = 100.0, 0.4, 80.0
+    n = int(fs * dur)
+    t = np.arange(n) / fs
+    times = t + 1_700_000_000.0
+    rng = np.random.default_rng(5)
+    s = 100.0 * np.sin(2 * np.pi * freq * t)
+    mid = n // 2
+    ax1, ax2 = _unit([0.9, 0.1, 0.2]), _unit([0.1, 0.9, 0.2])      # ~80° apart
+    grav = _unit([0.0, 0.0, 1.0])
+    gyro = np.empty((n, 3))
+    accel = np.tile(grav, (n, 1)) + rng.normal(0, 0.01, (n, 3))
+    gyro[:mid] = np.outer(s[:mid], ax1) + rng.normal(0, 0.5, (mid, 3))
+    gyro[mid:] = np.outer(s[mid:], ax2) + rng.normal(0, 0.5, (n - mid, 3))
+
+    fr = build_sensor_frame(times, accel, gyro)
+    assert fr is not None and is_rowing(fr)
+    # adaptive frame keeps a clean 1-D axis per window; the whole-interval axis blends.
+    whole = _axis(accel, gyro, times)
+    assert whole is not None
+    assert fr.variance_explained > whole.variance_explained + 0.2, \
+        (fr.variance_explained, whole.variance_explained)
+    # catches are found in BOTH halves (signal stayed periodic through the change).
+    cs = detect_catches(fr.times_s, fr.signal, fr.fs, fr.dominant_hz)
+    ct = np.array([c.time_s - times[0] for c in cs])
+    first = int(((ct > 5) & (ct < dur / 2 - 3)).sum())
+    second = int(((ct > dur / 2 + 12) & (ct < dur - 3)).sum())   # after change + 1 window
+    assert first >= 5 and second >= 5, (first, second)
+
+
+# ─── golden vector: the two tiers' offset estimators must stay byte-for-byte equal ─
+
+def test_golden_vector_matches_phone():
+    """gaussian_lag on a FIXED deterministic input reproduces these exact numbers. The
+    phone test `crossLag matches portal golden vector` asserts the SAME constants, so any
+    drift between the two estimators breaks one side. The magnitudes also PIN the
+    documented conservative sub-sample bias (an injected +40 ms shift reads ~34.5 ms)."""
+    fs, freq, n = 100.0, 0.5, 200
+
+    def wave(shift):
+        x = np.sin(2 * np.pi * freq * (np.arange(n) - shift) / fs)
+        return np.where(x > 0, 1.8 * x, x)
+
+    ref = wave(0)
+    golden = {0: (0.0, 1.0), 4: (34.52485, 0.99948), -7: (-67.92291, 1.0)}
+    for shift, (lag_ms, rho) in golden.items():
+        est = gaussian_lag(ref, wave(shift), fs, max_lag_s=0.2)
+        assert est is not None
+        assert abs(est.lag_s * 1000.0 - lag_ms) < 0.02, (shift, est.lag_s * 1000.0, lag_ms)
+        assert abs(est.rho - rho) < 0.001, (shift, est.rho, rho)

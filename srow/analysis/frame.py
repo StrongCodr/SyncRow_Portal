@@ -110,7 +110,8 @@ class _Axis:
     dominant_hz: float          # autocorr period of the chosen axis OVER THIS WINDOW
 
 
-def _axis(accel_w: np.ndarray, gyro_w: np.ndarray, times_w: np.ndarray) -> _Axis | None:
+def _axis(accel_w: np.ndarray, gyro_w: np.ndarray, times_w: np.ndarray,
+          prev_sweep: np.ndarray | None = None) -> _Axis | None:
     """Synthetic frame axis over ONE window (RESEARCH.md §3): down = gravity (mean
     accel); sweep = dominant gyro rotation axis (PC1, feather-checked against PC2),
     orthogonalised against down, deterministic sign; third = down x sweep. Returns
@@ -129,21 +130,36 @@ def _axis(accel_w: np.ndarray, gyro_w: np.ndarray, times_w: np.ndarray) -> _Axis
         return None
     variance_explained = float(evals[0] / (evals.sum() + _EPS))
 
-    # Feather rejection: prefer PC1 if in the stroke band, else PC2 if it is. Keep the
-    # chosen axis's WINDOWED autocorr frequency (the phone reuses this same value as its
-    # period — the orthogonalised sweep has effectively the same rhythm).
+    # Feather choice, with HYSTERESIS (mirrors the phone's recomputeAxisIfDue): once an
+    # axis is locked, keep following whichever PC *continues* it (the one most aligned
+    # with prev_sweep) as long as that axis stays in the stroke band — only re-decide
+    # fresh when the continuation genuinely leaves the band (a real re-orientation / the
+    # rower stopped). Without this, a window where PC1 is marginally out-of-band flips to
+    # PC2 (a ~90° jump the sign-align can't fix), corrupting the projected signal on
+    # ambiguous seats. Fresh decision: prefer PC1 if in-band, else PC2, else keep PC1.
     pc1, pc2 = evecs[:, 0], evecs[:, 1]
-    d1 = _project_dom_hz(G, pc1, times_w)
     used_fallback = False
     stroke_axis_ok = True
-    if validity.in_stroke_band(d1):
-        sweep, dom = pc1, d1
-    else:
-        d2 = _project_dom_hz(G, pc2, times_w)
-        if validity.in_stroke_band(d2):
-            sweep, dom, used_fallback = pc2, d2, True
+    sweep = None
+    dom = 0.0
+    if prev_sweep is not None:
+        if abs(float(pc1 @ prev_sweep)) >= abs(float(pc2 @ prev_sweep)):
+            cont, cont_fallback = pc1, False
         else:
-            sweep, dom, stroke_axis_ok = pc1, d1, False  # no clean stroke axis (cox/idle)
+            cont, cont_fallback = pc2, True
+        dcont = _project_dom_hz(G, cont, times_w)
+        if validity.in_stroke_band(dcont):
+            sweep, dom, used_fallback = cont, dcont, cont_fallback
+    if sweep is None:
+        d1 = _project_dom_hz(G, pc1, times_w)
+        if validity.in_stroke_band(d1):
+            sweep, dom = pc1, d1
+        else:
+            d2 = _project_dom_hz(G, pc2, times_w)
+            if validity.in_stroke_band(d2):
+                sweep, dom, used_fallback = pc2, d2, True
+            else:
+                sweep, dom, stroke_axis_ok = pc1, d1, False  # no clean stroke axis (cox/idle)
 
     sweep = sweep - (sweep @ down) * down
     sn = np.linalg.norm(sweep)
@@ -196,7 +212,7 @@ def build_sensor_frame(times_s: np.ndarray, accel: np.ndarray, gyro: np.ndarray,
     if gyro.shape[0] > 1:
         held[1:] = np.all(gyro[1:] == gyro[:-1], axis=1)
 
-    G = np.nan_to_num(gyro - np.nanmean(gyro, axis=0))
+    global_mean = np.nanmean(gyro, axis=0)
     span = float(times_s[-1] - times_s[0])
     win = cfg.axis_window_s
 
@@ -206,60 +222,75 @@ def build_sensor_frame(times_s: np.ndarray, accel: np.ndarray, gyro: np.ndarray,
         ax = _axis(accel, gyro, times_s)
         if ax is None:
             return None
-        proj = G @ ax.sweep
+        proj = (gyro - global_mean) @ ax.sweep
         rep = ax
         dominant_hz = ax.dominant_hz
+        var_rep, fb_rep, ok_rep = ax.variance_explained, ax.used_fallback, ax.stroke_axis_ok
     else:
-        # Adaptive: recompute the axis over a trailing `win` window at each anchor,
-        # sign-align to the previous, then project each sample with its anchor's axis.
+        # Adaptive: recompute the axis over a trailing `win` window at each anchor
+        # (with feather hysteresis vs the previous axis), sign-align to the previous,
+        # then project each sample with the axis AND the gyro mean of its anchor window
+        # (window-centred projection, matching the phone — not one global mean).
         anchors = np.arange(times_s[0] + win, span + times_s[0] + cfg.axis_refresh_s,
                             cfg.axis_refresh_s)
         atimes: list[float] = []
         sweeps: list[np.ndarray] = []
-        doms: list[float] = []               # per-window in-band autocorr frequencies
+        means: list[np.ndarray] = []          # gyro mean of each anchor's window
+        doms: list[float] = []                # per-window in-band autocorr frequencies (fresh only)
+        var_list: list[float] = []
+        any_fb = any_ok = False
         rep = None
         prev = None
         for ta in anchors:
             i0 = int(np.searchsorted(times_s, ta - win))
             i1 = int(np.searchsorted(times_s, ta))
-            ax = _axis(accel[i0:i1], gyro[i0:i1], times_s[i0:i1]) if i1 - i0 >= 16 else None
+            fresh = i1 - i0 >= 16
+            ax = _axis(accel[i0:i1], gyro[i0:i1], times_s[i0:i1], prev) if fresh else None
             if ax is None:
                 if rep is None:
-                    continue                 # no axis has locked yet
-                ax = rep                     # carry the last good axis over a degenerate window
+                    continue                  # no axis has locked yet
+                ax, fresh = rep, False        # carry the last good axis over a degenerate window
             sweep = ax.sweep
             if prev is not None and float(sweep @ prev) < 0:
-                sweep = -sweep               # keep the projected signal continuous
-                ax = _Axis(ax.down, sweep, np.cross(ax.down, sweep), ax.variance_explained,
-                           ax.used_fallback, ax.stroke_axis_ok, ax.dominant_hz)
+                sweep = -sweep                # keep the projected signal continuous
             prev = sweep
             atimes.append(float(ta))
             sweeps.append(sweep)
-            if ax.stroke_axis_ok:
-                doms.append(ax.dominant_hz)
-            rep = ax                         # representative = latest good axis
+            means.append(gyro[i0:i1].mean(axis=0) if i1 > i0 else global_mean)
+            if fresh:                         # only fresh windows inform the aggregates
+                var_list.append(ax.variance_explained)
+                any_fb = any_fb or ax.used_fallback
+                any_ok = any_ok or ax.stroke_axis_ok
+                if ax.stroke_axis_ok:
+                    doms.append(ax.dominant_hz)
+            rep = ax                          # representative = latest good axis
         if rep is None:
             return None
-        # per-sample axis = the most recent anchor at/before the sample (the first
+        # per-sample axis/mean = the most recent anchor at/before the sample (the first
         # anchor for the head, before any window is full).
         atimes_a = np.asarray(atimes)
         sweeps_a = np.asarray(sweeps)                       # (K, 3)
+        means_a = np.asarray(means)                         # (K, 3)
         idx = np.clip(np.searchsorted(atimes_a, times_s, side="right") - 1,
                       0, len(atimes) - 1)
-        proj = np.einsum("ij,ij->i", G, sweeps_a[idx])      # project per-sample
+        proj = np.einsum("ij,ij->i", gyro - means_a[idx], sweeps_a[idx])
         # dominant_hz = median of the per-window in-band locks (each window is ~stationary,
         # so this is robust where a single whole-interval autocorr smears if the rate
         # drifts). Falls back to the representative axis's own frequency if none locked.
         dominant_hz = float(np.median(doms)) if doms else rep.dominant_hz
+        # representative diagnostics span the whole interval (median var / any-window
+        # feather-fallback / any-window locked), not just the last anchor's.
+        var_rep = float(np.median(var_list)) if var_list else rep.variance_explained
+        fb_rep, ok_rep = any_fb, any_ok
 
     sweep_energy = float(proj.std())                 # amplitude BEFORE z-scoring
     signal = (proj - proj.mean()) / sweep_energy if sweep_energy > _EPS else proj * 0.0
 
     return SensorFrame(
         times_s=times_s, signal=signal, down=rep.down, sweep=rep.sweep, third=rep.third,
-        variance_explained=rep.variance_explained,
+        variance_explained=var_rep,
         dominant_hz=dominant_hz,                     # AUTOCORRELATION (harmonic-robust)
         sweep_energy=sweep_energy, fs=fs,
-        used_feather_fallback=rep.used_fallback, stroke_axis_ok=rep.stroke_axis_ok,
+        used_feather_fallback=fb_rep, stroke_axis_ok=ok_rep,
         held=held,
     )
