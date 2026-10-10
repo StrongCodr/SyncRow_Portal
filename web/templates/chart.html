@@ -62,6 +62,9 @@
         var d = (v instanceof Date) ? v : new Date(String(v).replace(' ', 'T') + (/(Z|[+-]\d\d:?\d\d)$/.test(String(v)) ? '' : 'Z'));
         return d.toISOString();
       }
+      function autoY(y) {                       // y always autoscales to the data loaded for the visible span
+        var o = Object.assign({}, y || {}); delete o.range; o.autorange = true; o.fixedrange = true; return o;
+      }
       function currentFull() {
         var gd = document.getElementById('chart-imu');
         if (!gd || !gd.data || !gd.data.length) return null;
@@ -83,12 +86,12 @@
             var xr = [toIso(range[0]), toIso(range[1])];
             if (d.imu && d.imu.length && plotted.indexOf('chart-imu') >= 0) {
               var traces = d.imu.map(function (t) { return {type: 'scatter', mode: 'lines', name: t.name, x: t.x, y: t.y, line: {width: 1.2, color: t.color}}; });
-              var lay = Object.assign({}, el.layout, {'xaxis': Object.assign({}, el.layout.xaxis, {range: xr, autorange: false})});
+              var lay = Object.assign({}, el.layout, {'xaxis': Object.assign({}, el.layout.xaxis, {range: xr, autorange: false}), 'yaxis': autoY(el.layout.yaxis)});
               syncing = true; Promise.resolve(Plotly.react('chart-imu', traces, lay, {responsive: true, displaylogo: false})).then(function () { syncing = false; }, function () { syncing = false; });
             }
             var sp = document.getElementById('chart-speed');
             if (d.speed && sp && plotted.indexOf('chart-speed') >= 0) {
-              var lay2 = Object.assign({}, sp.layout, {'xaxis': Object.assign({}, sp.layout.xaxis, {range: xr, autorange: false})});
+              var lay2 = Object.assign({}, sp.layout, {'xaxis': Object.assign({}, sp.layout.xaxis, {range: xr, autorange: false}), 'yaxis': autoY(sp.layout.yaxis)});
               syncing = true; Promise.resolve(Plotly.react('chart-speed', [{type: 'scatter', mode: 'lines', name: 'speed', x: d.speed.x, y: d.speed.y, line: {width: 1.5, color: '#2ac3de'}}], lay2, {responsive: true, displaylogo: false})).then(function () { syncing = false; }, function () { syncing = false; });
             }
             var lbl = document.getElementById('res-label');

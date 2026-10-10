@@ -58,7 +58,7 @@ def imu_fig(df: pd.DataFrame | None):
             "line": {"width": 1.2, "color": PALETTE[i % len(PALETTE)]},
         })
     layout = {**_BASE_LAYOUT, "height": 300,
-              "xaxis": {"title": "time"}, "yaxis": {"title": field}}
+              "xaxis": {"title": "time"}, "yaxis": {"title": field, "fixedrange": True, "autorange": True}}
     return {"data": data, "layout": layout}
 
 
@@ -113,7 +113,7 @@ def offsets_fig(cross):
         return None
     layout = {**_BASE_LAYOUT, "height": 260,
               "xaxis": {"title": "time (one point per stroke)"},
-              "yaxis": {"title": "latency ms — behind (+) / ahead (−)", "zeroline": True}}
+              "yaxis": {"fixedrange": True, "autorange": True, "title": "latency ms — behind (+) / ahead (−)", "zeroline": True}}
     return {"data": data, "layout": layout}
 
 
@@ -166,7 +166,7 @@ def speed_fig(gdf) -> dict | None:
         "line": {"width": 1.5, "color": "#2ac3de"},
     }]
     layout = {**_BASE_LAYOUT, "height": 200, "showlegend": False,
-              "xaxis": {"title": "time"}, "yaxis": {"title": "km/h"}}
+              "xaxis": {"title": "time"}, "yaxis": {"title": "km/h", "fixedrange": True, "autorange": True}}
     return {"data": data, "layout": layout}
 
 
