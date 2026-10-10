@@ -235,6 +235,55 @@ from(bucket: "{safe_bucket}")
 
         return df_wide.sort_values(["time", "source"])
 
+    def load_series(
+        self,
+        tag_name: str,
+        interval_value: str,
+        start: "datetime",
+        stop: "datetime",
+        window: str | None,
+        measurement: str = "imu",
+        fields: tuple[str, ...] | None = None,
+    ) -> pd.DataFrame:
+        """Load one time range of an interval, raw (window=None) or mean-aggregated per `window`.
+
+        Returns a wide DataFrame: time, source, <fields>. Used by the resolution-adaptive
+        chart endpoint; the window is chosen by the caller from the visible span and pixel width.
+        """
+        safe_tag = _escape_flux_string(tag_name)
+        safe_value = _escape_flux_string(interval_value)
+        safe_measurement = _escape_flux_string(measurement)
+        safe_bucket = _escape_flux_string(self.settings.bucket)
+        field_filter = ""
+        if fields:
+            ors = " or ".join(f'r._field == "{_escape_flux_string(f)}"' for f in fields)
+            field_filter = f"|> filter(fn: (r) => {ors})"
+        agg = f"|> aggregateWindow(every: {window}, fn: mean, createEmpty: false)" if window else ""
+        flux = f'''
+from(bucket: "{safe_bucket}")
+  |> range(start: {start.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]}Z, stop: {stop.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]}Z)
+  |> filter(fn: (r) => r._measurement == "{safe_measurement}")
+  |> filter(fn: (r) => r["{safe_tag}"] == "{safe_value}")
+  {field_filter}
+  {agg}
+  |> sort(columns: ["_time"])
+'''
+        tables = self.query_api().query(flux, org=self.settings.effective_org())
+        rows = []
+        for table in tables:
+            for record in table.records:
+                vals = record.values
+                rows.append({
+                    "time": record["_time"],
+                    "field": record["_field"],
+                    "value": record["_value"],
+                    "source": self._source_label(vals),
+                })
+        if not rows:
+            return pd.DataFrame()
+        df = pd.DataFrame(rows).pivot_table(index=["time", "source"], columns="field", values="value").reset_index()
+        return df.sort_values(["source", "time"]).reset_index(drop=True)
+
     def load_interval_aggregated(
         self,
         tag_name: str,

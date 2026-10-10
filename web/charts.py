@@ -183,3 +183,49 @@ def track_data(gdf) -> dict | None:
         return None
     center = [sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts)]
     return {"points": pts, "center": center}
+
+
+# Resolution-adaptive series: pick the aggregation window so that the visible span yields at most
+# about `points_per_px` points per pixel, down to raw rows when the span is short enough.
+_WINDOW_LADDER_S = (0.02, 0.04, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0)
+
+
+def pick_window(span_s: float, px: int, points_per_px: int = 4) -> str | None:
+    """Flux duration for the bucket, or None for raw rows."""
+    px = max(int(px), 50)
+    needed = span_s / (points_per_px * px)
+    if needed <= 0.02:
+        return None
+    for w in _WINDOW_LADDER_S:
+        if w >= needed:
+            return f"{int(round(w * 1000))}ms" if w < 1 else f"{int(w)}s"
+    return "300s"
+
+
+def next_window(window: str | None) -> str:
+    """The next coarser bucket on the ladder (raw -> 20ms, 20ms -> 40ms, ...)."""
+    cur = 0.0 if window is None else (int(window[:-2]) / 1000 if window.endswith("ms") else float(window[:-1]))
+    for w in _WINDOW_LADDER_S:
+        if w > cur:
+            return f"{int(round(w * 1000))}ms" if w < 1 else f"{int(w)}s"
+    return "300s"
+
+
+def series_payload(imu_df: pd.DataFrame | None, gps_df: pd.DataFrame | None, window: str | None) -> dict:
+    """JSON-ready traces for the IMU and speed charts at one resolution."""
+    out = {"window_ms": None if window is None else (int(window[:-2]) if window.endswith("ms") else int(window[:-1]) * 1000),
+           "imu": [], "speed": None, "n": 0}
+    if imu_df is not None and not imu_df.empty and "source" in imu_df.columns:
+        d, field = _imu_field(imu_df)
+        if field is not None:
+            for i, (src, g) in enumerate(d.groupby("source")):
+                g = g.sort_values("time")
+                out["imu"].append({"name": str(src), "x": _times(g["time"]), "y": _clean(g[field]),
+                                   "color": PALETTE[i % len(PALETTE)]})
+                out["n"] += len(g)
+    if gps_df is not None and not gps_df.empty and "speed" in gps_df.columns:
+        g = gps_df.sort_values("time"); sp = pd.to_numeric(g["speed"], errors="coerce") * 3.6
+        m = sp.notna() & (sp >= 0)
+        if m.any():
+            out["speed"] = {"x": _times(g["time"][m]), "y": _clean(sp[m])}; out["n"] += int(m.sum())
+    return out
