@@ -57,7 +57,7 @@ def is_rowing(frame: SensorFrame) -> bool:
 # per-seat status (each seat judged on its OWN acquisition + match quality, so one
 # bad seat never voids the whole boat's stroke):
 OK = "ok"
-DEGRADED = "degraded_signal"     # sensor spaced out: too much zero-order-hold in window
+DEGRADED = "degraded_signal"     # sensor spaced out: a gap without fresh samples longer than max_fresh_gap_s in the window
 LOW_CONF = "low_confidence"      # fresh data but waveform doesn't match (rho < min_corr)
 REF_BAD = "reference_bad"        # the stroke's reference itself was unmeasurable
 
@@ -124,24 +124,16 @@ def _lag_uncertainty_s(rho: float, n: int, f_dom: float) -> float:
     return (1.0 / (2.0 * np.pi * f_dom)) * np.sqrt((1.0 - rho * rho) / (rho * rho)) / np.sqrt(n)
 
 
-def _held_run_frac(frame: SensorFrame, t0: float, t1: float) -> float:
-    """Longest zero-order-hold run within [t0,t1], as a fraction of the samples in
-    the window. High => the sensor held a flat value across much of this stroke, so
-    its waveform there is unmeasurable (sensor-side, before any rowing judgement)."""
-    i0 = int(np.searchsorted(frame.times_s, t0))
-    i1 = int(np.searchsorted(frame.times_s, t1))
-    n = i1 - i0
-    if n < 4:
-        return 1.0
-    held = frame.held[i0:i1]
-    # longest run of True
-    best = run = 0
-    for h in held:
-        run = run + 1 if h else 0
-        if run > best:
-            best = run
-    return best / n
-
+def _longest_gap_s(frame: SensorFrame, t0: float, t1: float) -> float:
+    """Longest stretch without a FRESH sample inside [t0, t1], in seconds. Held (zero-order-hold)
+    rows are not fresh, and a BLE hole is simply missing time, so both show up here. A gap longer
+    than a fraction of the drive shifts the x-corr lag by up to the gap length (measured on the
+    3 Oct data: holes of 0.5-1 s biased same-oar offsets by +270 ms)."""
+    fresh_t = frame.times_s[~frame.held]
+    i0, i1 = np.searchsorted(fresh_t, t0), np.searchsorted(fresh_t, t1)
+    inside = fresh_t[i0:i1]
+    edges = np.r_[t0, inside, t1]
+    return float(np.diff(edges).max()) if edges.size > 1 else float(t1 - t0)
 
 def analyze_cross(frames: dict[str, SensorFrame], catches: dict[str, list[Catch]],
                   cfg: AnalysisConfig = DEFAULT) -> CrossResult:
@@ -189,7 +181,7 @@ def analyze_cross(frames: dict[str, SensorFrame], catches: dict[str, list[Catch]
             flags.append(f)
         if ref_amp.get(t_ref, median_amp) < cfg.drill_amp_frac * median_amp:
             flags.append(DRILL)
-        ref_degraded = _held_run_frac(frames[ref], t_ref - half, t_ref + half) > cfg.max_held_run_frac
+        ref_degraded = _longest_gap_s(frames[ref], t_ref - half, t_ref + half) > cfg.max_fresh_gap_s
         if ref_degraded:
             flags.append(REF_DEGRADED)
 
@@ -200,7 +192,7 @@ def analyze_cross(frames: dict[str, SensorFrame], catches: dict[str, list[Catch]
         for s in others:
             # 1) sensor acquisition first: if this seat's window is mostly held, the
             #    signal is unmeasurable regardless of what the rower did.
-            if _held_run_frac(frames[s], t_ref - half, t_ref + half) > cfg.max_held_run_frac:
+            if _longest_gap_s(frames[s], t_ref - half, t_ref + half) > cfg.max_fresh_gap_s:
                 status[s] = DEGRADED
                 continue
             est = gaussian_lag(ref_win, sigs[s][i0:i1], cfg.xcorr_grid_hz, max_lag)

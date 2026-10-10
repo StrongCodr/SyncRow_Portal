@@ -3,18 +3,24 @@
 Replaces "pick one Euler channel" with a frame CONSTRUCTED from the data, so it
 is independent of how the sensor was mounted on the oar:
 
-    down  = gravity direction (mean accelerometer; see caveat below)
-    sweep = dominant gyro rotation axis (PCA), spectrally checked to be the
-            stroke (not the feather roll), orthogonalized against down
-    third = down x sweep
+    flip  = feather-flip axis: PC1 of the gyro content above `flip_hp_hz`, accepted when it
+            carries >= `flip_min_deg_s` of fast rotation (sculling: 150-400 deg/s). Removed
+            from the gyro before anything else; a plain PCA locks onto it otherwise.
+    sweep = dominant remaining rotation axis: PC1 of the flip-free gyro low-passed at
+            `axis_lp_hz`, per trailing window. NOT orthogonalised against gravity: an oar
+            swings about the pin, a near-vertical axis, so on a scull the sweep axis lies
+            within ~10-25 deg of `down`.
+    down  = gravity direction (mean accelerometer); only used to complete the frame.
+    third = down x sweep (any perpendicular if the two are parallel).
 
-The gyro projected onto `sweep` is a signed 1-D oscillation, one cycle per stroke.
+The gyro projected onto `sweep`, held rows interpolated, low-passed at `signal_lp_hz`, is a
+signed 1-D oscillation, one cycle per stroke. Validated 10 Oct 2026 against the offline
+signal-analysis pipeline: correlation 0.99-1.00 on every unit of three sessions; the two
+units on one oar (3 Oct) agree to an IQR of 20 ms on clean strokes.
 
-Caveats (honest): `down` is the interval-mean accel — valid only if linear
-accelerations average out; under sustained turns it drifts. `down` is used only
-to orthogonalize `sweep`, which PCA already dominates, so its influence is minor.
-PCA assumes a single constant rotation axis over the interval; residual off-axis
-energy (1 - variance_explained) is what makes per-stroke catch phase wander.
+Caveats: `down` is the interval-mean accel and drifts under sustained turns (it only
+affects `third`). The per-window PCA assumes a constant axis within `axis_window_s`;
+residual off-axis energy (1 - variance_explained) is what makes per-stroke catch phase wander.
 """
 
 from __future__ import annotations
@@ -22,6 +28,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from scipy.signal import butter, filtfilt
 
 from . import validity
 from .config import DEFAULT, AnalysisConfig
@@ -94,9 +101,56 @@ def _autocorr_hz(proj: np.ndarray, times_s: np.ndarray) -> float:
     return _PERIOD_HZ / best_lag
 
 
+def _uniform(times_s: np.ndarray, x: np.ndarray, grid_hz: float):
+    """Resample irregular samples onto a uniform grid (linear). Returns (grid_t, x_u) or None if too short."""
+    if times_s.size < 8 or times_s[-1] - times_s[0] < 1.0:
+        return None
+    grid = np.arange(times_s[0], times_s[-1], 1.0 / grid_hz)
+    x = np.atleast_2d(x.T).T if x.ndim == 1 else x
+    xu = np.column_stack([np.interp(grid, times_s, np.nan_to_num(x[:, c])) for c in range(x.shape[1])])
+    return grid, xu
+
+
+def _lowpass(x: np.ndarray, fc_hz: float, grid_hz: float) -> np.ndarray:
+    """Zero-phase 2nd-order Butterworth low-pass along axis 0 (x on a uniform grid)."""
+    if fc_hz <= 0 or fc_hz >= grid_hz / 2 or x.shape[0] < 16:
+        return x
+    b, a = butter(2, fc_hz / (grid_hz / 2))
+    return filtfilt(b, a, x, axis=0)
+
+
+def _flip_axis(times_s: np.ndarray, gyro_centered: np.ndarray, cfg: AnalysisConfig):
+    """Feather-flip axis of one sensor over the WHOLE interval (fresh rows), or None.
+    PC1 of the gyro content above `flip_hp_hz` on a uniform grid. It is accepted as the feather
+    axis when the high-frequency rate along it is large in absolute terms (p99 of |rate| at least
+    `flip_min_deg_s`): feathering puts 150-400 deg/s of fast content on the shaft axis, while a
+    hull unit, or an oar that is not feathered, has under 10 deg/s there.
+    Returns (axis, p99_deg_s) with axis None when no such axis exists."""
+    if cfg.flip_hp_hz <= 0:
+        return None, 0.0
+    u = _uniform(times_s, gyro_centered, cfg.filter_grid_hz)
+    if u is None:
+        return None, 0.0
+    _, gu = u
+    lo = _lowpass(gu, cfg.flip_hp_hz, cfg.filter_grid_hz)
+    hi = gu - lo
+    ch = (hi.T @ hi) / max(len(hi), 1)
+    ev, V = np.linalg.eigh(ch)
+    fa = V[:, int(np.argmax(ev))]
+    if ev.max() <= _EPS:
+        return None, 0.0
+    p99 = float(np.percentile(np.abs(hi @ fa), 99))
+    return (fa if p99 >= cfg.flip_min_deg_s else None), p99
+
+
 def _project_dom_hz(gyro_centered: np.ndarray, axis: np.ndarray,
                     times_s: np.ndarray) -> float:
     return _autocorr_hz(gyro_centered @ axis, times_s)
+
+
+def _strip(g: np.ndarray, axis: np.ndarray | None) -> np.ndarray:
+    """Remove the component of g along `axis` (no-op if None)."""
+    return g if axis is None else g - np.outer(g @ axis, axis)
 
 
 @dataclass
@@ -111,7 +165,8 @@ class _Axis:
 
 
 def _axis(accel_w: np.ndarray, gyro_w: np.ndarray, times_w: np.ndarray,
-          prev_sweep: np.ndarray | None = None) -> _Axis | None:
+          prev_sweep: np.ndarray | None = None, cfg: AnalysisConfig = DEFAULT,
+          flip_axis: np.ndarray | None = None) -> _Axis | None:
     """Synthetic frame axis over ONE window (RESEARCH.md §3): down = gravity (mean
     accel); sweep = dominant gyro rotation axis (PC1, feather-checked against PC2),
     orthogonalised against down, deterministic sign; third = down x sweep. Returns
@@ -121,8 +176,16 @@ def _axis(accel_w: np.ndarray, gyro_w: np.ndarray, times_w: np.ndarray,
     gn = np.linalg.norm(g_mean)
     down = g_mean / gn if gn > _EPS else np.array([0.0, 0.0, 1.0])
 
-    G = np.nan_to_num(gyro_w - np.nanmean(gyro_w, axis=0))
-    cov = (G.T @ G) / max(len(G), 1)
+    G = _strip(np.nan_to_num(gyro_w - np.nanmean(gyro_w, axis=0)), flip_axis)
+    # Sweep PCA on the stroke-band content of the flip-free gyro (the stroke band is < 1 Hz;
+    # everything above it is catch shock and noise, which otherwise bias the covariance).
+    u = _uniform(times_w, G, cfg.filter_grid_hz) if cfg.axis_lp_hz > 0 else None
+    if u is not None:
+        gl = _lowpass(u[1], cfg.axis_lp_hz, cfg.filter_grid_hz)
+        gl = gl - gl.mean(axis=0)
+        cov = (gl.T @ gl) / max(len(gl), 1)
+    else:
+        cov = (G.T @ G) / max(len(G), 1)
     evals, evecs = np.linalg.eigh(cov)               # ascending
     order = np.argsort(evals)[::-1]
     evals, evecs = evals[order], evecs[:, order]
@@ -130,43 +193,32 @@ def _axis(accel_w: np.ndarray, gyro_w: np.ndarray, times_w: np.ndarray,
         return None
     variance_explained = float(evals[0] / (evals.sum() + _EPS))
 
-    # Feather choice, with HYSTERESIS (mirrors the phone's recomputeAxisIfDue): once an
-    # axis is locked, keep following whichever PC *continues* it (the one most aligned
-    # with prev_sweep) as long as that axis stays in the stroke band — only re-decide
-    # fresh when the continuation genuinely leaves the band (a real re-orientation / the
-    # rower stopped). Without this, a window where PC1 is marginally out-of-band flips to
-    # PC2 (a ~90° jump the sign-align can't fix), corrupting the projected signal on
-    # ambiguous seats. Fresh decision: prefer PC1 if in-band, else PC2, else keep PC1.
-    pc1, pc2 = evecs[:, 0], evecs[:, 1]
+    # With the feather axis removed explicitly (see _flip_axis), PC1 of the stroke-band
+    # covariance IS the sweep axis. The old "PC1 out of band -> use PC2" fallback is gone: on an
+    # oar every axis is periodic at the stroke rate, so that test could not tell sweep from
+    # wobble and produced 90-degree axis jumps between windows. The band test now only flags
+    # whether a stroke rhythm exists at all (cox / idle).
+    sweep = evecs[:, 0]
+    if prev_sweep is not None and float(sweep @ prev_sweep) < 0:
+        sweep = -sweep
+    dom = _project_dom_hz(G, sweep, times_w)
+    stroke_axis_ok = bool(validity.in_stroke_band(dom))
     used_fallback = False
-    stroke_axis_ok = True
-    sweep = None
-    dom = 0.0
-    if prev_sweep is not None:
-        if abs(float(pc1 @ prev_sweep)) >= abs(float(pc2 @ prev_sweep)):
-            cont, cont_fallback = pc1, False
-        else:
-            cont, cont_fallback = pc2, True
-        dcont = _project_dom_hz(G, cont, times_w)
-        if validity.in_stroke_band(dcont):
-            sweep, dom, used_fallback = cont, dcont, cont_fallback
-    if sweep is None:
-        d1 = _project_dom_hz(G, pc1, times_w)
-        if validity.in_stroke_band(d1):
-            sweep, dom = pc1, d1
-        else:
-            d2 = _project_dom_hz(G, pc2, times_w)
-            if validity.in_stroke_band(d2):
-                sweep, dom, used_fallback = pc2, d2, True
-            else:
-                sweep, dom, stroke_axis_ok = pc1, d1, False  # no clean stroke axis (cox/idle)
 
-    sweep = sweep - (sweep @ down) * down
+    # NOTE: the sweep axis is NOT orthogonalised against gravity. An oar swings about the pin,
+    # a near-vertical axis, so on a scull the sweep axis is close to `down` itself and projecting
+    # it out destroyed the signal (the earlier code did this; the residual was wobble).
+    # `third` completes a right-handed frame from whatever part of `down` is perpendicular.
     sn = np.linalg.norm(sweep)
     if sn <= _EPS:
         return None
     sweep = sweep / sn
     third = np.cross(down, sweep)
+    tn = np.linalg.norm(third)
+    if tn <= _EPS:                                   # sweep parallel to gravity: any perpendicular
+        third = np.cross(np.array([1.0, 0.0, 0.0]) if abs(sweep[0]) < 0.9 else np.array([0.0, 1.0, 0.0]), sweep)
+        tn = np.linalg.norm(third)
+    third = third / tn
 
     if sweep[int(np.argmax(np.abs(sweep)))] < 0:     # deterministic sign (§3.3)
         sweep = -sweep
@@ -212,17 +264,23 @@ def build_sensor_frame(times_s: np.ndarray, accel: np.ndarray, gyro: np.ndarray,
     if gyro.shape[0] > 1:
         held[1:] = np.all(gyro[1:] == gyro[:-1], axis=1)
 
-    global_mean = np.nanmean(gyro, axis=0)
+    fresh = ~held
+    if fresh.sum() < 16:
+        return None
+    global_mean = np.nanmean(gyro[fresh], axis=0)
+    # Feather-flip axis, decided once over the whole interval on fresh rows (stable; a per-window
+    # decision flickers and a flickering axis is worse than none).
+    flip_axis, flip_ratio = _flip_axis(times_s[fresh], np.nan_to_num(gyro[fresh] - global_mean), cfg)
     span = float(times_s[-1] - times_s[0])
     win = cfg.axis_window_s
 
     if span <= win:
         # Short interval: the trailing window IS the whole interval -> single axis
         # (byte-identical to the pre-adaptive engine).
-        ax = _axis(accel, gyro, times_s)
+        ax = _axis(accel[fresh], gyro[fresh], times_s[fresh], cfg=cfg, flip_axis=flip_axis)
         if ax is None:
             return None
-        proj = (gyro - global_mean) @ ax.sweep
+        proj = _strip(gyro - global_mean, flip_axis) @ ax.sweep
         rep = ax
         dominant_hz = ax.dominant_hz
         var_rep, fb_rep, ok_rep = ax.variance_explained, ax.used_fallback, ax.stroke_axis_ok
@@ -244,20 +302,21 @@ def build_sensor_frame(times_s: np.ndarray, accel: np.ndarray, gyro: np.ndarray,
         for ta in anchors:
             i0 = int(np.searchsorted(times_s, ta - win))
             i1 = int(np.searchsorted(times_s, ta))
-            fresh = i1 - i0 >= 16
-            ax = _axis(accel[i0:i1], gyro[i0:i1], times_s[i0:i1], prev) if fresh else None
+            sel = np.where(fresh[i0:i1])[0] + i0          # fresh rows of this window only
+            is_fresh = sel.size >= 16
+            ax = _axis(accel[sel], gyro[sel], times_s[sel], prev, cfg, flip_axis) if is_fresh else None
             if ax is None:
                 if rep is None:
                     continue                  # no axis has locked yet
-                ax, fresh = rep, False        # carry the last good axis over a degenerate window
+                ax, is_fresh = rep, False     # carry the last good axis over a degenerate window
             sweep = ax.sweep
             if prev is not None and float(sweep @ prev) < 0:
                 sweep = -sweep                # keep the projected signal continuous
             prev = sweep
             atimes.append(float(ta))
             sweeps.append(sweep)
-            means.append(gyro[i0:i1].mean(axis=0) if i1 > i0 else global_mean)
-            if fresh:                         # only fresh windows inform the aggregates
+            means.append(gyro[sel].mean(axis=0) if sel.size else global_mean)
+            if is_fresh:                      # only fresh windows inform the aggregates
                 var_list.append(ax.variance_explained)
                 any_fb = any_fb or ax.used_fallback
                 any_ok = any_ok or ax.stroke_axis_ok
@@ -273,7 +332,7 @@ def build_sensor_frame(times_s: np.ndarray, accel: np.ndarray, gyro: np.ndarray,
         means_a = np.asarray(means)                         # (K, 3)
         idx = np.clip(np.searchsorted(atimes_a, times_s, side="right") - 1,
                       0, len(atimes) - 1)
-        proj = np.einsum("ij,ij->i", gyro - means_a[idx], sweeps_a[idx])
+        proj = np.einsum("ij,ij->i", _strip(gyro - means_a[idx], flip_axis), sweeps_a[idx])
         # dominant_hz = median of the per-window in-band locks (each window is ~stationary,
         # so this is robust where a single whole-interval autocorr smears if the rate
         # drifts). Falls back to the representative axis's own frequency if none locked.
@@ -282,6 +341,18 @@ def build_sensor_frame(times_s: np.ndarray, accel: np.ndarray, gyro: np.ndarray,
         # feather-fallback / any-window locked), not just the last anchor's.
         var_rep = float(np.median(var_list)) if var_list else rep.variance_explained
         fb_rep, ok_rep = any_fb, any_ok
+
+    # Held (zero-order-hold) rows carry no new motion: replace their projection by the linear
+    # interpolation between fresh neighbours so the signal is not a staircase.
+    if held.any():
+        proj[held] = np.interp(times_s[held], times_s[fresh], proj[fresh])
+    # Low-pass the sweep signal (zero-phase, on a uniform grid, back to native times): the
+    # catch is read from the stroke-band shape, not from flip or shock spikes.
+    if cfg.signal_lp_hz > 0:
+        u = _uniform(times_s, proj, cfg.filter_grid_hz)
+        if u is not None:
+            grid, pu = u
+            proj = np.interp(times_s, grid, _lowpass(pu, cfg.signal_lp_hz, cfg.filter_grid_hz)[:, 0])
 
     sweep_energy = float(proj.std())                 # amplitude BEFORE z-scoring
     signal = (proj - proj.mean()) / sweep_energy if sweep_energy > _EPS else proj * 0.0

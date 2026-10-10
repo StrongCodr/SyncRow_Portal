@@ -41,6 +41,7 @@ repo; everything else here.
 - [ ] Raw IMU/speed/map stay display-only (200 ms agg never feeds a metric).
 
 ## SyncRow app (phone) — repo: `../SyncRow`, branch `per-seat-quality-gating`
+- [ ] **Record frames on arrival, not on a timer (HIGH PRIORITY, 2026-10-06).** `IntervalRecordingService` writes `latestSample` for every sensor on a fixed 10 ms tick (`targetSamplePeriodMs = 10`), stamped with the tick time. Result: ~100 rows/s per sensor of which ~75 % are repeats of the previous frame, timestamps quantised to the tick instead of arrival, and a frame is silently overwritten when two notifications land inside one tick. Fix: write each 0x61 frame in `onCharacteristicChanged` with its arrival time; keep the 10 ms loop only for the live display/analyzer. Same for location: write a row only when a new fix arrives, with the fix's own time (`location.time`), and drop the 1 s dedupe re-write. Confirmed from the 3 Oct data (see `docs/FINDINGS_2026-10-05.md` §4, §6).
 - [x] **Per-seat real-time quality gating (APPROXIMATION of the portal spec, not a mirror — see RESEARCH §8.5).** `SensorSyncStatus {CALIBRATING, OK, DEGRADED_SIGNAL, STALE}`; `StrokeAnalyzer.onSample(…, fresh)` skips held ticks so a plateau can't corrupt the median or fake a crossing; time-since-fresh > `HELD_RUN_FRAC` of a stroke → `DEGRADED_SIGNAL`, acquisition checked before pairing; only an OK seat shows a lateness, degraded/stale → "--", no other seat touched. UI shows "sensor dropout". **No `low_confidence` (phone has no x-corr) → phone can show a stroke the portal drops.** Tests run on a standalone JVM (kotlinc + JUnit): 4/4 pass.
 - [x] **Reference seat = highest seat number (stroke) — FIXED.** `StrokeAnalyzer` referenced the LOWEST index (bow, showed 0 there) while the UI ("Stroke reference: Seat N") and portal use the highest. seatIndex already equals the user-facing "Seat N" (same formula as SensorLabelBuilder), so fix = pick MAX seatIndex; selection by value, not add-order. Confirmed live: 0 was landing on seat 1 (bow) instead of seat 2 (stroke). Test asserts it.
 - [x] **Double-count fix — FIXED.** Schmitt trigger (band = 0.20·IQR, was ~0 hysteresis) + refractory 0.40→0.55·period. Catch TIME comes from the true median crossing (interpolated between straddling samples), NOT the hysteresis flip point, so timing isn't biased late. Test asserts ~1 catch/cycle on a noisy signal.
@@ -49,8 +50,23 @@ repo; everything else here.
 - [ ] Move to synthetic gyro-PCA axis (real-time tier); causal expanding→sliding window (~30 s).
 - [ ] Quality-gated window (warm-up rejection) + display-only backfill/repaint. (`low_confidence` match-quality analogue: phone has no x-corr yet — revisit with the synthetic-axis move.)
 - [ ] Confirm `seat` tag ordering unambiguous.
+- [ ] **Experiment: sensor TIME packet (0x50) for true sample times (2026-10-06).** Goal: record each frame's time as the sensor saw it, as exactly and realistically as possible, alongside the phone arrival time. Steps: (1) enable the existing `enableTimePacket` toggle for one session (writes RSW bit 0); (2) decode the 0x50 payload in `onCharacteristicChanged` instead of just counting it (Y/M/D/h/m/s/ms, 10 bytes); (3) store `sensor_time_ms` on every row next to arrival time — pair each 0x61 frame with the most recent 0x50 and the frame count since it; (4) measure the cost: does the extra stream reduce 0x61 delivery below ~25/s (compare `imu_diag.received` with and without); (5) in the portal, fit sensor time vs arrival time per sensor (robust linear fit) and use it for all timing. If the TIME stream costs too much bandwidth, fall back to a per-frame sequence counter if the firmware offers one, else the arrival-cadence clock recovery (FINDINGS §5.3 item 1).
 
 ## Sensor / firmware — LATER (bench + app/firmware)
 - [ ] Bench: RSW bit-sweep; is `0x61` fixed vs composed; `0x50` throughput cost; rate vs sensor-count; connection interval; decode a `0x50`.
 - [ ] Decode `0x50` timestamp → de-jitter; per-packet sequence counter (drop detection).
 - [ ] Raise rate off 50 Hz; 9-sensor plan (RF cascade / onboard logging); set RTC; mag/quaternion only if needed.
+
+## 2026-10-10 engine: sweep axis fixed (feather flip, gravity projection, hole gating)
+- [x] Feather-flip axis detected explicitly (PC1 of > 2 Hz gyro, p99 >= 60 deg/s) and removed
+      before the sweep PCA; the PCA runs on the < 2.5 Hz content. The PC1-out-of-band -> PC2
+      fallback is gone (every axis on an oar is stroke-periodic, so it only produced 90 deg jumps).
+- [x] Sweep axis no longer orthogonalised against gravity. On a scull the pin axis is 8-25 deg
+      from `down`; the projection left wobble, hence zero correlation with the real sweep.
+- [x] Axis window 10 s -> 60 s (10 s broke on BLE-holey data); held rows interpolated; projected
+      signal low-passed at 3 Hz.
+- [x] Per-seat per-stroke gating on the longest gap without fresh samples (> 0.30 s = degraded),
+      replacing the held-run fraction. Holes of 0.5-1 s in the drive biased same-oar offsets by
+      +270 ms on 3 Oct.
+- Checked with scripts/engine_check.py: 10 Oct merged pieces 346/350 and 290/307 strokes OK,
+  medians -2 / -90 ms (bow ahead); 3 Oct same-oar pair -2 ms, IQR 20 ms on clean strokes.

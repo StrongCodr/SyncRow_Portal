@@ -7,7 +7,9 @@ answer, the math returns it. (Real-hardware artifacts — differing waveform sha
 per mount, BLE jitter — still require a bench test; see RESEARCH §4, §9.)
 """
 
+import dataclasses
 import numpy as np
+from srow.analysis.config import DEFAULT
 
 from srow.analysis.crosssensor import gaussian_lag, is_rowing
 from srow.analysis.detect import detect_catches
@@ -195,10 +197,11 @@ def test_adaptive_axis_relocks_after_reorientation():
     gyro[:mid] = np.outer(s[:mid], ax1) + rng.normal(0, 0.5, (mid, 3))
     gyro[mid:] = np.outer(s[mid:], ax2) + rng.normal(0, 0.5, (n - mid, 3))
 
-    fr = build_sensor_frame(times, accel, gyro)
+    cfg = dataclasses.replace(DEFAULT, axis_window_s=10.0)   # mechanism test: short window on an 80 s piece
+    fr = build_sensor_frame(times, accel, gyro, cfg)
     assert fr is not None and is_rowing(fr)
     # adaptive frame keeps a clean 1-D axis per window; the whole-interval axis blends.
-    whole = _axis(accel, gyro, times)
+    whole = _axis(accel, gyro, times, cfg=cfg)
     assert whole is not None
     assert fr.variance_explained > whole.variance_explained + 0.2, \
         (fr.variance_explained, whole.variance_explained)
