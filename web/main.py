@@ -56,7 +56,7 @@ USERS = _load_users()
 
 app = FastAPI(title="SyncRow Web")
 app.add_middleware(
-    SessionMiddleware, secret_key=SESSION_SECRET, https_only=True, same_site="lax"
+    SessionMiddleware, secret_key=SESSION_SECRET, https_only=os.getenv("SROW_INSECURE_COOKIES") != "1", same_site="lax"
 )
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 templates.env.cache = None  # jinja2 LRU cache trips on Python 3.14; harmless to disable
