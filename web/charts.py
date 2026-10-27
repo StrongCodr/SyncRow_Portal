@@ -201,6 +201,94 @@ def speed_fig(gdf, xrange=None) -> dict | None:
     return {"data": data, "layout": layout}
 
 
+def _decimate(t: np.ndarray, y: np.ndarray, budget: int):
+    """At most `budget` points: bucket means over equal spans (the trace keeps its shape when zoomed out)."""
+    n = len(t)
+    if n <= budget:
+        return t, y
+    k = int(np.ceil(n / budget)); m = (n // k) * k
+    tt = t[:m].reshape(-1, k).mean(axis=1); yy = y[:m].reshape(-1, k).mean(axis=1)
+    return tt, yy
+
+
+HULL_COLOR = "#9ece6a"
+
+
+def _signal_traces(series: dict, t0: float, t1: float, budget: int, width: float = 1.4, colors=None) -> list[dict]:
+    """series: {name: (epoch_s array, values array)} -> Plotly traces clipped to [t0, t1] and decimated."""
+    import datetime as _dt
+    out = []
+    for i, (name, (t, y)) in enumerate(series.items()):
+        i0, i1 = np.searchsorted(t, t0), np.searchsorted(t, t1)
+        tt, yy = _decimate(t[i0:i1], y[i0:i1], max(budget // max(len(series), 1), 50))
+        if len(tt) == 0:
+            continue
+        out.append({"type": "scatter", "mode": "lines", "name": str(name),
+                    "x": [_dt.datetime.fromtimestamp(float(v), tz=_dt.timezone.utc).isoformat() for v in tt],
+                    "y": _clean(yy), "line": {"width": width, "color": (colors or PALETTE)[i % len(colors or PALETTE)]}})
+    return out
+
+
+def _catch_trace(catches_s, t0: float, t1: float, name: str) -> dict | None:
+    """The stroke seat's catches as markers on the zero line (drawn only when few enough to read)."""
+    import datetime as _dt
+    c = np.asarray([x for x in (catches_s or []) if t0 <= x <= t1], float)
+    if c.size == 0 or c.size > 400:
+        return None
+    return {"type": "scatter", "mode": "markers", "name": name, "hoverinfo": "x+name",
+            "x": [_dt.datetime.fromtimestamp(float(v), tz=_dt.timezone.utc).isoformat() for v in c],
+            "y": [0.0] * int(c.size), "marker": {"symbol": "line-ns-open", "size": 14, "color": "#9aa5b1", "line": {"width": 1.4}}}
+
+
+def _span(xrange, series: dict):
+    import datetime as _dt
+    if xrange:
+        return (_dt.datetime.fromisoformat(xrange[0]).timestamp(), _dt.datetime.fromisoformat(xrange[1]).timestamp())
+    lo = min(float(t[0]) for t, _ in series.values()); hi = max(float(t[-1]) for t, _ in series.values())
+    return lo, hi
+
+
+def sweep_fig(oars: dict, catches_s, xrange=None, budget: int = 3200) -> dict | None:
+    """Each oar's sweep angular velocity (deg/s, drive positive) with the stroke seat's catches."""
+    if not oars:
+        return None
+    t0, t1 = _span(xrange, oars)
+    data = _signal_traces(oars, t0, t1, budget)
+    if not data:
+        return None
+    c = _catch_trace(catches_s, t0, t1, "catch (stroke seat)")
+    if c:
+        data.append(c)
+    layout = {**_BASE_LAYOUT, "height": 300, "xaxis": _xaxis("time", xrange),
+              "yaxis": {"title": "deg/s", "fixedrange": True, "autorange": True, "zeroline": True}}
+    return {"data": data, "layout": layout}
+
+
+def hull_fig(hull: dict, catches_s, xrange=None, budget: int = 3200) -> dict | None:
+    """The hull unit's fore-aft acceleration (m/s², drive positive) with the stroke seat's catches."""
+    if not hull:
+        return None
+    t0, t1 = _span(xrange, hull)
+    data = _signal_traces(hull, t0, t1, budget, colors=[HULL_COLOR])
+    if not data:
+        return None
+    c = _catch_trace(catches_s, t0, t1, "catch (stroke seat)")
+    if c:
+        data.append(c)
+    layout = {**_BASE_LAYOUT, "height": 240, "xaxis": _xaxis("time", xrange),
+              "yaxis": {"title": "m/s²", "fixedrange": True, "autorange": True, "zeroline": True}}
+    return {"data": data, "layout": layout}
+
+
+def signal_payload(oars: dict, hull: dict, catches_s, t0: float, t1: float, budget: int) -> dict:
+    """JSON-ready traces for the sweep and hull charts over [t0, t1] (epoch seconds)."""
+    out = {"sweep": _signal_traces(oars, t0, t1, budget) if oars else [],
+           "hull": _signal_traces(hull, t0, t1, budget, colors=[HULL_COLOR]) if hull else []}
+    c = _catch_trace(catches_s, t0, t1, "catch (stroke seat)")
+    out["catch"] = c
+    return out
+
+
 def track_data(gdf) -> dict | None:
     """GPS lat/lon points + center for a Leaflet polyline."""
     if gdf is None or len(gdf) == 0 or "latitude" not in gdf.columns:

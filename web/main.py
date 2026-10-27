@@ -26,7 +26,9 @@ from srow.config import load_settings
 from srow.services import InfluxService, LocationService
 from srow.analysis.load import load_raw_by_source
 from srow.analysis.engine import analyze_interval
+from srow.analysis.hull import hull_surge
 from web import charts
+from functools import lru_cache
 
 BASE_DIR = Path(__file__).parent
 settings = load_settings()
@@ -109,12 +111,16 @@ def index(request: Request):
     )
 
 
-def _analyze_offsets(tag: str, value: str):
-    """Run the real analysis engine on RAW data for this interval and return its
-    CrossResult (per-seat ms offsets). Heavy (streaming raw load + PCA + x-corr);
-    on-demand for now, TODO move to the precompute worker. Returns None on failure
-    so the rest of the page still renders. Window: ±2 days around the interval's
-    name epoch (name/data clocks differ ~9h; a tight window misses the data)."""
+@lru_cache(maxsize=6)
+def _analysis(tag: str, value: str):
+    """Run the analysis engine on RAW data for this interval, once per process (the raw load, PCA and
+    x-corr are heavy; the result is a few MB). Returns a bundle, or None on failure so the page still
+    renders:
+      cross:   CrossResult (per-seat ms offsets)
+      oars:    {source: (epoch_s, deg/s)} the rowing units' sweep angular velocity, drive positive
+      hull:    {source: (epoch_s, m/s²)} fore-aft acceleration of every non-rowing unit (the hull)
+      catches: [epoch_s] the stroke seat's catches
+    Window: ±2 days around the interval's name epoch (name/data clocks differ ~9h)."""
     m = re.search(r"(\d{13})", value)
     if not m:
         return None
@@ -126,9 +132,27 @@ def _analyze_offsets(tag: str, value: str):
         )
         if not by_source:
             return None
-        return analyze_interval(by_source).cross
+        an = analyze_interval(by_source)
+        cross = an.cross
+        oars = {s: (an.frames[s].times_s, an.frames[s].signal * an.frames[s].sweep_energy)
+                for s in cross.rowers if s in an.frames}
+        catches = [c.time_s for c in an.catches.get(cross.reference, [])] if cross.reference else []
+        hull = {}
+        for s, d in by_source.items():
+            if s in cross.rowers:
+                continue
+            g, a = hull_surge(d["times_s"], d["accel"], catches)
+            if g is not None:
+                hull[s] = (g, a)
+        return {"cross": cross, "oars": oars, "hull": hull, "catches": catches}
     except Exception:
         return None
+
+
+def _analyze_offsets(tag: str, value: str):
+    """The engine's CrossResult for this interval (see _analysis), or None."""
+    b = _analysis(tag, value)
+    return b["cross"] if b else None
 
 
 @app.get("/interval", response_class=HTMLResponse)
@@ -152,7 +176,8 @@ def interval(request: Request, tag: str, value: str):
 
     # Real timing offsets (ms) from the raw-resolution engine — replaces the old
     # unitless synchronicity score.
-    cross = _analyze_offsets(tag, value)
+    bundle = _analysis(tag, value) or {}
+    cross = bundle.get("cross")
     xrange = charts.shared_range(cross, df, gdf)   # every chart opens on the same span
 
     return templates.TemplateResponse(
@@ -166,6 +191,8 @@ def interval(request: Request, tag: str, value: str):
             "offsets_boat": charts.offsets_boat(cross),
             "speed_json": json.dumps(charts.speed_fig(gdf, xrange)),
             "imu_json": json.dumps(charts.imu_fig(df, xrange)),
+            "sweep_json": json.dumps(charts.sweep_fig(bundle.get("oars"), bundle.get("catches"), xrange)),
+            "hull_json": json.dumps(charts.hull_fig(bundle.get("hull"), bundle.get("catches"), xrange)),
             "track_json": json.dumps(charts.track_data(gdf)),
         },
     )
@@ -189,6 +216,8 @@ def _series(tag: str, value: str, start: dt.datetime, stop: dt.datetime, px: int
     gps_window = None if (window is None or window.endswith("ms")) else window   # GPS is 1 Hz: sub-second buckets = raw
     gps_df = influx.load_series(tag, value, start, stop, gps_window, measurement="phone_location", fields=("speed",))
     payload = charts.series_payload(imu_df, gps_df, window)
+    b = _analysis(tag, value) or {}
+    payload.update(charts.signal_payload(b.get("oars"), b.get("hull"), b.get("catches"), start.timestamp(), stop.timestamp(), budget))
     payload["start"], payload["stop"], payload["px"] = start.isoformat(), stop.isoformat(), px
     return payload
 

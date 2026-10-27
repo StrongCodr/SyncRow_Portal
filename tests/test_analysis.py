@@ -233,3 +233,31 @@ def test_golden_vector_matches_phone():
         assert est is not None
         assert abs(est.lag_s * 1000.0 - lag_ms) < 0.02, (shift, est.lag_s * 1000.0, lag_ms)
         assert abs(est.rho - rho) < 0.001, (shift, est.rho, rho)
+
+
+def test_hull_surge_finds_forward_axis_and_sign():
+    """A surge of known shape along a random mounting axis comes back on that axis, drive positive."""
+    from srow.analysis.hull import hull_surge, G0
+    rng = np.random.default_rng(3)
+    fs, dur, f = 50.0, 120.0, 0.4
+    t = np.arange(0, dur, 1 / fs); phase = (t * f) % 1.0
+    surge = np.where(phase < 0.4, 3.0 * np.sin(np.pi * phase / 0.4), -1.0)   # m/s^2: short push, long weak pull
+    fwd = _unit(rng.normal(size=3)); down = _unit(np.cross(fwd, rng.normal(size=3)))
+    acc = (np.outer(surge, fwd) + np.outer(np.ones_like(t), down) * G0) / G0 + rng.normal(scale=0.01, size=(t.size, 3))
+    catches = list(np.arange(0, dur, 1 / f))
+    g, s = hull_surge(t + 1.7e9, acc, [c + 1.7e9 for c in catches])
+    assert g is not None
+    ref = np.interp(g - 1.7e9, t, surge)
+    assert np.corrcoef(s, ref)[0, 1] > 0.95
+    assert s[(g - 1.7e9) % (1 / f) < 0.2].mean() > 0            # drive positive
+    g2, s2 = hull_surge(t + 1.7e9, acc, None)                   # sign from skew alone
+    assert np.corrcoef(s2, ref)[0, 1] > 0.95
+
+
+def test_decimate_keeps_shape_within_budget():
+    from web.charts import _decimate
+    t = np.arange(10000.0); y = np.sin(t / 50.0)
+    tt, yy = _decimate(t, y, 500)
+    assert len(tt) <= 500 and abs(yy.max() - 1.0) < 0.05 and abs(yy.min() + 1.0) < 0.05
+    t2, y2 = _decimate(t[:100], y[:100], 500)
+    assert len(t2) == 100
