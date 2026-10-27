@@ -65,16 +65,26 @@
       function autoY(y) {                       // y always autoscales to the data loaded for the visible span
         var o = Object.assign({}, y || {}); delete o.range; o.autorange = true; o.fixedrange = true; return o;
       }
-      function currentFull() {
-        var gd = document.getElementById('chart-imu');
-        if (!gd || !gd.data || !gd.data.length) return null;
+      function currentFull() {                // the union of every chart's data: what "reset axes" shows
         var lo = null, hi = null;
-        gd.data.forEach(function (tr) {
-          if (!tr.x || !tr.x.length) return;
-          var a = new Date(tr.x[0]), b = new Date(tr.x[tr.x.length - 1]);
-          if (lo === null || a < lo) lo = a; if (hi === null || b > hi) hi = b;
+        plotted.forEach(function (id) {
+          var gd = document.getElementById(id);
+          if (!gd || !gd.data) return;
+          gd.data.forEach(function (tr) {
+            if (!tr.x || !tr.x.length) return;
+            var a = new Date(tr.x[0]), b = new Date(tr.x[tr.x.length - 1]);
+            if (lo === null || a < lo) lo = a; if (hi === null || b > hi) hi = b;
+          });
         });
         return (lo && hi) ? [lo, hi] : null;
+      }
+      function initialRange() {               // the span the server put on the charts (first to last piece stroke)
+        for (var i = 0; i < plotted.length; i++) {
+          var gd = document.getElementById(plotted[i]);
+          var r = gd && gd.layout && gd.layout.xaxis && gd.layout.xaxis.range;
+          if (r && r.length === 2) return [new Date(r[0]), new Date(r[1])];
+        }
+        return null;
       }
       function refine(range) {
         var el = document.getElementById('chart-imu'); if (!el) return;
@@ -112,12 +122,16 @@
           if (ev['xaxis.range[0]'] !== undefined) {
             update = {'xaxis.range': [ev['xaxis.range[0]'], ev['xaxis.range[1]']]}; range = [ev['xaxis.range[0]'], ev['xaxis.range[1]']];
           } else if (ev['xaxis.autorange']) {
-            update = {'xaxis.autorange': true}; range = fullRange;
+            // "reset axes": every chart, this one included, goes to the same full span rather than
+            // each autoscaling to its own data
+            if (!fullRange) return;
+            update = {'xaxis.range': [toIso(fullRange[0]), toIso(fullRange[1])], 'xaxis.autorange': false}; range = fullRange;
           } else {
             return;  // programmatic range sync, y-only zoom or theme restyle — don't propagate
           }
           syncing = true;
-          var done = plotted.filter(function (o) { return o !== id; }).map(function (other) {
+          var targets = (ev['xaxis.autorange']) ? plotted : plotted.filter(function (o) { return o !== id; });
+          var done = targets.map(function (other) {
             try { return Promise.resolve(Plotly.relayout(other, update)); } catch (e) { return Promise.resolve(); }
           });
           Promise.all(done).then(function () { syncing = false; }, function () { syncing = false; });
@@ -125,7 +139,8 @@
         });
       });
       fullRange = currentFull();
-      if (fullRange) refine(fullRange);          // first paint is the server's 200 ms view; refine to the pixel budget
+      var startRange = initialRange() || fullRange;
+      if (startRange) refine(startRange);        // first paint is the server's 200 ms view; refine to the pixel budget
 
       var track = {{ track_json | safe }};
       var mapEl = document.getElementById('map');

@@ -153,6 +153,7 @@ def interval(request: Request, tag: str, value: str):
     # Real timing offsets (ms) from the raw-resolution engine — replaces the old
     # unitless synchronicity score.
     cross = _analyze_offsets(tag, value)
+    xrange = charts.shared_range(cross, df, gdf)   # every chart opens on the same span
 
     return templates.TemplateResponse(
         request=request, name="chart.html",
@@ -160,11 +161,11 @@ def interval(request: Request, tag: str, value: str):
             "tag": tag,
             "value": value,
             "n": len(df) if df is not None else 0,
-            "offsets_json": json.dumps(charts.offsets_fig(cross)),
+            "offsets_json": json.dumps(charts.offsets_fig(cross, xrange)),
             "offsets_summary": charts.offsets_summary(cross),
             "offsets_boat": charts.offsets_boat(cross),
-            "speed_json": json.dumps(charts.speed_fig(gdf)),
-            "imu_json": json.dumps(charts.imu_fig(df)),
+            "speed_json": json.dumps(charts.speed_fig(gdf, xrange)),
+            "imu_json": json.dumps(charts.imu_fig(df, xrange)),
             "track_json": json.dumps(charts.track_data(gdf)),
         },
     )

@@ -16,7 +16,7 @@ PALETTE = [
 _BASE_LAYOUT = {
     "paper_bgcolor": "rgba(0,0,0,0)",
     "plot_bgcolor": "rgba(0,0,0,0)",
-    "margin": {"l": 55, "r": 20, "t": 10, "b": 40},
+    "margin": {"l": 62, "r": 20, "t": 10, "b": 40},   # identical on every chart so the plot areas line up
     "hovermode": "x unified",
     "legend": {"orientation": "h", "y": 1.15},
 }
@@ -28,6 +28,34 @@ def _times(idx) -> list[str]:
 
 def _clean(vals) -> list:
     return [None if v != v else float(v) for v in vals]
+
+
+def _xaxis(title: str, xrange) -> dict:
+    """One x-axis spec for every chart: the same explicit range on all of them, so the same second
+    sits at the same pixel on each. Without a range each chart would autoscale to its own data."""
+    ax = {"title": title}
+    if xrange:
+        ax["range"] = [xrange[0], xrange[1]]; ax["autorange"] = False
+    return ax
+
+
+def shared_range(cross, df: pd.DataFrame | None, gdf, pad_s: float = 5.0) -> list[str] | None:
+    """The time span all three charts open on: first to last piece stroke, padded, when the engine
+    found a piece; otherwise the union of the data. ISO strings for Plotly date axes."""
+    import datetime as _dt
+    lo = hi = None
+    piece = [st for st in (cross.strokes if cross is not None else []) if st.is_piece_stroke()]
+    if len(piece) >= 2:
+        lo = _dt.datetime.fromtimestamp(piece[0].stroke_time_s - pad_s, tz=_dt.timezone.utc)
+        hi = _dt.datetime.fromtimestamp(piece[-1].stroke_time_s + pad_s, tz=_dt.timezone.utc)
+    else:
+        for frame, col in ((df, "time"), (gdf, "time")):
+            if frame is None or len(frame) == 0:
+                continue
+            t = pd.to_datetime(frame[col] if col in frame.columns else frame.index, utc=True)
+            a, b = t.min(), t.max()
+            lo = a if lo is None or a < lo else lo; hi = b if hi is None or b > hi else hi
+    return [lo.isoformat(), hi.isoformat()] if lo is not None and hi is not None and hi > lo else None
 
 
 def _imu_field(df: pd.DataFrame):
@@ -42,7 +70,7 @@ def _imu_field(df: pd.DataFrame):
     return d, None
 
 
-def imu_fig(df: pd.DataFrame | None):
+def imu_fig(df: pd.DataFrame | None, xrange=None):
     """Per-sensor line chart of the rotation-invariant IMU field."""
     if df is None or df.empty or "source" not in df.columns:
         return None
@@ -58,11 +86,12 @@ def imu_fig(df: pd.DataFrame | None):
             "line": {"width": 1.2, "color": PALETTE[i % len(PALETTE)]},
         })
     layout = {**_BASE_LAYOUT, "height": 300,
-              "xaxis": {"title": "time"}, "yaxis": {"title": field, "fixedrange": True, "autorange": True}}
+              "xaxis": _xaxis("time", xrange),
+              "yaxis": {"title": "deg/s" if field == "gyro_mag" else field, "fixedrange": True, "autorange": True}}
     return {"data": data, "layout": layout}
 
 
-def offsets_fig(cross):
+def offsets_fig(cross, xrange=None):
     """Per-seat catch-timing offset vs the stroke seat, in milliseconds, over the
     piece. Positive = that seat catches AFTER stroke (behind); negative = before
     (ahead); the stroke seat is the flat 0 line. This replaces the old unitless
@@ -97,11 +126,13 @@ def offsets_fig(cross):
     })
     for i, s in enumerate(seats):
         # only this seat's trustworthy strokes (its own OK status)
-        xs, ys = [], []
+        xs, ys, last_t = [], [], None
         for st in piece:
             if st.seat_status.get(s) == "ok" and s in st.offsets_ms:
+                if last_t is not None and st.stroke_time_s - last_t > 6.0:
+                    xs.append(_ts(last_t + 1.0)); ys.append(None)   # a stop: break the line rather than bridge it
                 xs.append(_ts(st.stroke_time_s))
-                ys.append(round(st.offsets_ms[s], 1))
+                ys.append(round(st.offsets_ms[s], 1)); last_t = st.stroke_time_s
         if xs:
             data.append({
                 "type": "scatter", "mode": "lines+markers", "name": str(s),
@@ -112,8 +143,8 @@ def offsets_fig(cross):
     if len(data) < 2:  # only the baseline — nothing measured
         return None
     layout = {**_BASE_LAYOUT, "height": 260,
-              "xaxis": {"title": "time (one point per stroke)"},
-              "yaxis": {"fixedrange": True, "autorange": True, "title": "latency ms — behind (+) / ahead (−)", "zeroline": True}}
+              "xaxis": _xaxis("time (one point per stroke)", xrange),
+              "yaxis": {"fixedrange": True, "autorange": True, "title": "ms", "zeroline": True}}
     return {"data": data, "layout": layout}
 
 
@@ -150,7 +181,7 @@ def offsets_boat(cross) -> str | None:
     return f"{np.median(spreads):.0f} ms typical, {np.percentile(spreads, 90):.0f} ms worst"
 
 
-def speed_fig(gdf) -> dict | None:
+def speed_fig(gdf, xrange=None) -> dict | None:
     """Boat speed (km/h) over time from GPS."""
     if gdf is None or len(gdf) == 0 or "speed" not in gdf.columns:
         return None
@@ -166,7 +197,7 @@ def speed_fig(gdf) -> dict | None:
         "line": {"width": 1.5, "color": "#2ac3de"},
     }]
     layout = {**_BASE_LAYOUT, "height": 200, "showlegend": False,
-              "xaxis": {"title": "time"}, "yaxis": {"title": "km/h", "fixedrange": True, "autorange": True}}
+              "xaxis": _xaxis("time", xrange), "yaxis": {"title": "km/h", "fixedrange": True, "autorange": True}}
     return {"data": data, "layout": layout}
 
 
