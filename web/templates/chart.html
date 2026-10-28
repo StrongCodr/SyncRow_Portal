@@ -28,6 +28,11 @@
   </section>
 
   <section>
+    <h4 class="text-sm font-medium text-subtle mb-1">Boat speed, GPS refined by the hull unit (blank where the GPS is missing or unsteady)</h4>
+    <div id="chart-fused" style="height:220px;"></div>
+  </section>
+
+  <section>
     <h4 class="text-sm font-medium text-subtle mb-1">Oar sweep (angular velocity, drive positive; catches of the stroke seat marked)</h4>
     <div id="chart-sweep" style="height:300px;"></div>
   </section>
@@ -61,6 +66,7 @@
       }
       plot('chart-offsets', {{ offsets_json | safe }});
       plot('chart-speed',   {{ speed_json   | safe }});
+      plot('chart-fused',   {{ fused_json   | safe }});
       plot('chart-sweep',   {{ sweep_json   | safe }});
       plot('chart-hull',    {{ hull_json    | safe }});
       plot('chart-imu',     {{ imu_json     | safe }});
@@ -116,12 +122,13 @@
               var lay2 = Object.assign({}, sp.layout, {'xaxis': Object.assign({}, sp.layout.xaxis, {range: xr, autorange: false}), 'yaxis': autoY(sp.layout.yaxis)});
               syncing = true; Promise.resolve(Plotly.react('chart-speed', [{type: 'scatter', mode: 'lines', name: 'speed', x: d.speed.x, y: d.speed.y, line: {width: 1.5, color: '#2ac3de'}}], lay2, {responsive: true, displaylogo: false})).then(function () { syncing = false; }, function () { syncing = false; });
             }
-            // engine-derived signals (oar sweep, hull surge) at the same span, with the catches
-            [['chart-sweep', d.sweep], ['chart-hull', d.hull]].forEach(function (pair) {
+            // engine-derived signals (oar sweep, hull surge, fused speed) at the same span, with the
+            // catches (or, for the fused speed, the GPS fixes it rests on)
+            [['chart-sweep', d.sweep, d.catch], ['chart-hull', d.hull, d.catch], ['chart-fused', d.fused, d.gps]].forEach(function (pair) {
               var gd = document.getElementById(pair[0]); var traces = pair[1];
               if (!gd || plotted.indexOf(pair[0]) < 0 || !traces || !traces.length) return;
               var tr = traces.map(function (t) { return {type: 'scatter', mode: 'lines', name: t.name, x: t.x, y: t.y, line: t.line}; });
-              if (d.catch) tr.push(d.catch);
+              if (pair[2]) tr.push(pair[2]);
               var lay3 = Object.assign({}, gd.layout, {'xaxis': Object.assign({}, gd.layout.xaxis, {range: xr, autorange: false}), 'yaxis': autoY(gd.layout.yaxis)});
               syncing = true; Promise.resolve(Plotly.react(pair[0], tr, lay3, {responsive: true, displaylogo: false})).then(function () { syncing = false; }, function () { syncing = false; });
             });

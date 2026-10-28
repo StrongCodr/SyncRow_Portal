@@ -59,3 +59,98 @@ def hull_surge(times_s, accel_g, catches_s=None, fs_out: float = 25.0, lp_hz: fl
     if sign < 0:
         s = -s
     return grid, s
+
+
+def _hp(x: np.ndarray, fc_hz: float, fs: float, order: int = 2) -> np.ndarray:
+    b, a = butter(order, fc_hz / (fs / 2.0), "high"); return filtfilt(b, a, x, axis=0)
+
+
+def gps_windows(gps_t, gps_v, gps_acc=None, max_acc_m: float = 30.0, max_gap_s: float = 3.0,
+                min_len_s: float = 15.0, min_fixes: int = 10) -> list[tuple[float, float]]:
+    """Spans of steady GPS: good fixes (accuracy ≤ max_acc_m, speed present) with no gap over
+    max_gap_s between consecutive fixes, at least min_len_s long and min_fixes fixes. Outside
+    these spans there is no usable GPS, and nothing is fused there."""
+    t = np.asarray(gps_t, float); v = np.asarray(gps_v, float)
+    ok = np.isfinite(t) & np.isfinite(v) & (v >= 0)
+    if gps_acc is not None:
+        acc = np.asarray(gps_acc, float); ok &= ~np.isfinite(acc) | (acc <= max_acc_m)
+    t = np.sort(t[ok])
+    if t.size == 0:
+        return []
+    cuts = np.flatnonzero(np.diff(t) > max_gap_s) + 1
+    out = []
+    for seg in np.split(t, cuts):
+        if seg.size >= min_fixes and seg[-1] - seg[0] >= min_len_s:
+            out.append((float(seg[0]), float(seg[-1])))
+    return out
+
+
+def gps_lag(grid, surge, gps_t, gps_v, windows, fs: float, max_lag_s: float = 1.2,
+            band=(0.2, 0.8), min_corr: float = 0.1) -> float:
+    """Seconds by which the phone's GPS speed trails the hull unit's clock, from the cross-correlation
+    of the stroke-band GPS speed against the stroke-band integral of the surge over the steady spans.
+    The lag is searched within ± half a stroke so the stroke period cannot alias it. Positive = GPS
+    late. 0 when there is too little data or no clear peak (correlation under min_corr)."""
+    v_acc = np.cumsum(surge) / fs
+    lags = np.arange(-int(max_lag_s * fs), int(max_lag_s * fs) + 1)
+    acc_sum = np.zeros(lags.size); n_tot = 0
+    for w0, w1 in windows:
+        m = (grid >= w0) & (grid <= w1)
+        if m.sum() < int(30 * fs):
+            continue
+        g = grid[m]
+        sel = (gps_t >= w0) & (gps_t <= w1)
+        vg = np.interp(g, gps_t[sel], gps_v[sel])
+        a = _bp(v_acc[m] - np.polyval(np.polyfit(g - g[0], v_acc[m], 1), g - g[0]), band[0], band[1], fs)
+        b = _bp(vg - vg.mean(), band[0], band[1], fs)
+        if a.std() == 0 or b.std() == 0:
+            continue
+        a = a / a.std(); b = b / b.std()
+        for i, L in enumerate(lags):     # GPS shifted earlier by L samples lines up with the hull
+            if L >= 0:
+                x, y = a[: a.size - L], b[L:]
+            else:
+                x, y = a[-L:], b[: b.size + L]
+            acc_sum[i] += float(np.dot(x, y))
+        n_tot += a.size
+    if n_tot == 0 or not np.isfinite(acc_sum).any() or acc_sum.max() / n_tot < min_corr:
+        return 0.0
+    return float(lags[int(np.argmax(acc_sum))] / fs)
+
+
+def fused_speed(grid, surge, gps_t, gps_v, gps_acc=None, fs: float = 25.0, fc_hz: float = 0.15,
+                windows=None, lag_s=None):
+    """(grid, v_mps, windows, lag_s): boat speed on the surge grid, GPS plus hull accelerometer.
+
+    A complementary filter per steady-GPS span: the GPS speed (shifted earlier by its lag) supplies
+    everything below fc_hz, the integrated surge everything above it. Outside the steady spans the
+    speed is NaN: the accelerometer only refines GPS that is there, it never replaces it.
+    grid/surge: from hull_surge (uniform, fs). gps_t/gps_v/gps_acc: epoch s, m/s, m.
+    """
+    grid = np.asarray(grid, float); surge = np.asarray(surge, float)
+    gps_t = np.asarray(gps_t, float); gps_v = np.asarray(gps_v, float)
+    ok = np.isfinite(gps_t) & np.isfinite(gps_v)
+    if gps_acc is not None:
+        acc = np.asarray(gps_acc, float); ok &= ~np.isfinite(acc) | (acc <= 30.0)
+    gps_t, gps_v = gps_t[ok], gps_v[ok]
+    order = np.argsort(gps_t); gps_t, gps_v = gps_t[order], gps_v[order]
+    if windows is None:
+        windows = gps_windows(gps_t, gps_v)
+    out = np.full(grid.size, np.nan)
+    if not windows or grid.size == 0:
+        return grid, out, windows, 0.0
+    if lag_s is None:
+        lag_s = gps_lag(grid, surge, gps_t, gps_v, windows, fs)
+    tg = gps_t - lag_s
+    v_acc = np.cumsum(surge) / fs
+    for w0, w1 in windows:
+        m = (grid >= w0 - lag_s) & (grid <= w1 - lag_s)
+        if m.sum() < int(fs * 10):
+            continue
+        g = grid[m]; sel = (tg >= w0 - lag_s) & (tg <= w1 - lag_s)
+        if sel.sum() < 4:
+            continue
+        vg = np.interp(g, tg[sel], gps_v[sel])
+        va = v_acc[m]; va = va - np.polyval(np.polyfit(g - g[0], va, 1), g - g[0])
+        out[m] = _lp(vg, fc_hz, fs) + _hp(va, fc_hz, fs)
+    return grid, out, windows, float(lag_s)

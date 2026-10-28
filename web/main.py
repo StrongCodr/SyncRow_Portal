@@ -13,6 +13,8 @@ Run:
 
 import datetime as dt
 import json
+import numpy as np
+import pandas as pd
 import os
 import re
 from pathlib import Path
@@ -26,7 +28,7 @@ from srow.config import load_settings
 from srow.services import InfluxService, LocationService
 from srow.analysis.load import load_raw_by_source
 from srow.analysis.engine import analyze_interval
-from srow.analysis.hull import hull_surge
+from srow.analysis.hull import hull_surge, fused_speed
 from web import charts
 from functools import lru_cache
 
@@ -119,6 +121,9 @@ def _analysis(tag: str, value: str):
       cross:   CrossResult (per-seat ms offsets)
       oars:    {source: (epoch_s, deg/s)} the rowing units' sweep angular velocity, drive positive
       hull:    {source: (epoch_s, m/s²)} fore-aft acceleration of every non-rowing unit (the hull)
+      fused:   {source: (epoch_s, m/s)} boat speed, GPS refined by that unit's surge; NaN where the
+               GPS is missing or unsteady (see hull.fused_speed)
+      gps:     (epoch_s, m/s) the good GPS fixes on the hull unit's clock (lag removed), or None
       catches: [epoch_s] the stroke seat's catches
     Window: ±2 days around the interval's name epoch (name/data clocks differ ~9h)."""
     m = re.search(r"(\d{13})", value)
@@ -144,9 +149,34 @@ def _analysis(tag: str, value: str):
             g, a = hull_surge(d["times_s"], d["accel"], catches)
             if g is not None:
                 hull[s] = (g, a)
-        return {"cross": cross, "oars": oars, "hull": hull, "catches": catches}
+        fused, gps = {}, None
+        gt, gv, ga = _gps_arrays(tag, value)
+        if gt is not None and gt.size:
+            for s, (g, a) in hull.items():
+                _, v, wins, lag = fused_speed(g, a, gt, gv, ga)
+                if wins and np.isfinite(v).any():
+                    fused[s] = (g, v)
+                    if gps is None:
+                        ok = np.isfinite(gv) & ((ga <= 30.0) if ga is not None else True)
+                        gps = (gt[ok] - lag, gv[ok])
+        return {"cross": cross, "oars": oars, "hull": hull, "fused": fused, "gps": gps, "catches": catches}
     except Exception:
         return None
+
+
+def _gps_arrays(tag: str, value: str):
+    """(epoch_s, speed m/s, accuracy m or None) of the interval's phone fixes, or (None, None, None)."""
+    try:
+        gdf = location.load_track(tag_name=tag, interval_value=value)
+    except Exception:
+        return None, None, None
+    if gdf is None or len(gdf) == 0 or "speed" not in gdf.columns:
+        return None, None, None
+    t = gdf["time"] if "time" in gdf.columns else gdf.index
+    gt = np.array([pd.Timestamp(x).timestamp() for x in t], float)
+    gv = pd.to_numeric(gdf["speed"], errors="coerce").to_numpy(float)
+    ga = pd.to_numeric(gdf["accuracy"], errors="coerce").to_numpy(float) if "accuracy" in gdf.columns else None
+    return gt, gv, ga
 
 
 def _analyze_offsets(tag: str, value: str):
@@ -193,6 +223,7 @@ def interval(request: Request, tag: str, value: str):
             "imu_json": json.dumps(charts.imu_fig(df, xrange)),
             "sweep_json": json.dumps(charts.sweep_fig(bundle.get("oars"), bundle.get("catches"), xrange)),
             "hull_json": json.dumps(charts.hull_fig(bundle.get("hull"), bundle.get("catches"), xrange)),
+            "fused_json": json.dumps(charts.fused_fig(bundle.get("fused"), bundle.get("gps"), xrange)),
             "track_json": json.dumps(charts.track_data(gdf)),
         },
     )
@@ -217,7 +248,8 @@ def _series(tag: str, value: str, start: dt.datetime, stop: dt.datetime, px: int
     gps_df = influx.load_series(tag, value, start, stop, gps_window, measurement="phone_location", fields=("speed",))
     payload = charts.series_payload(imu_df, gps_df, window)
     b = _analysis(tag, value) or {}
-    payload.update(charts.signal_payload(b.get("oars"), b.get("hull"), b.get("catches"), start.timestamp(), stop.timestamp(), budget))
+    payload.update(charts.signal_payload(b.get("oars"), b.get("hull"), b.get("catches"), start.timestamp(), stop.timestamp(), budget,
+                                         fused=b.get("fused"), gps=b.get("gps")))
     payload["start"], payload["stop"], payload["px"] = start.isoformat(), stop.isoformat(), px
     return payload
 

@@ -261,3 +261,33 @@ def test_decimate_keeps_shape_within_budget():
     assert len(tt) <= 500 and abs(yy.max() - 1.0) < 0.05 and abs(yy.min() + 1.0) < 0.05
     t2, y2 = _decimate(t[:100], y[:100], 500)
     assert len(t2) == 100
+
+
+def test_gps_windows_only_where_gps_is_steady():
+    """Fixes split into steady spans at gaps over 3 s; poor-accuracy and short spans are dropped."""
+    from srow.analysis.hull import gps_windows
+    t = np.r_[np.arange(0, 40.0), np.arange(50, 100.0), np.arange(110, 118.0)]      # 40 s, gap, 50 s, gap, 8 s
+    v = np.full(t.size, 3.0); acc = np.full(t.size, 5.0); acc[(t >= 60) & (t < 70)] = 500.0   # cell-tower stretch
+    w = gps_windows(t, v, acc)
+    assert w == [(0.0, 39.0), (70.0, 99.0)]        # 50..59 is only 10 s: too short; 110.. is 8 s
+    assert gps_windows(t, v, np.full(t.size, 900.0)) == []
+
+
+def test_fused_speed_recovers_stroke_swing_and_gates_on_gps():
+    """GPS at 1 Hz (slow part only) plus the surge gives the full within-stroke speed; no GPS, no speed."""
+    from srow.analysis.hull import fused_speed
+    fs, dur, f = 25.0, 200.0, 0.4
+    g = np.arange(0, dur, 1 / fs) + 1.7e9
+    slow = 3.0 + 0.3 * np.sin(2 * np.pi * (g - g[0]) / 60.0)
+    stroke = 0.6 * np.sin(2 * np.pi * f * (g - g[0]))
+    true_v = slow + stroke
+    surge = np.gradient(true_v, 1 / fs)
+    gt = np.arange(0, 120.0) + 1.7e9                                 # GPS only for the first 120 s
+    gv = np.interp(gt, g, slow) + np.random.default_rng(1).normal(scale=0.1, size=gt.size)
+    _, v, wins, lag = fused_speed(g, surge, gt, gv, np.full(gt.size, 5.0))
+    assert len(wins) == 1 and abs(lag) <= 0.2
+    inside = (g >= 1.7e9 + 10) & (g <= 1.7e9 + 110)
+    assert np.isfinite(v[inside]).all() and np.isnan(v[g > 1.7e9 + 125]).all()
+    assert abs(np.nanmean(v[inside]) - true_v[inside].mean()) < 0.1
+    err = v[inside] - true_v[inside]
+    assert np.sqrt(np.mean(err ** 2)) < 0.12                           # the 0.6 m/s swing is in, GPS noise mostly out

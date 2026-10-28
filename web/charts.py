@@ -280,12 +280,52 @@ def hull_fig(hull: dict, catches_s, xrange=None, budget: int = 3200) -> dict | N
     return {"data": data, "layout": layout}
 
 
-def signal_payload(oars: dict, hull: dict, catches_s, t0: float, t1: float, budget: int) -> dict:
-    """JSON-ready traces for the sweep and hull charts over [t0, t1] (epoch seconds)."""
+FUSED_COLOR = "#73daca"
+
+
+def _kmh(series: dict) -> dict:
+    return {k: (t, np.asarray(v, float) * 3.6) for k, (t, v) in series.items()}
+
+
+def _gps_trace(gps, t0: float, t1: float, limit: int = 600) -> dict | None:
+    """The GPS fixes the fused speed is anchored to, as dots (km/h), when few enough to read."""
+    import datetime as _dt
+    if gps is None:
+        return None
+    t, v = gps
+    m = (t >= t0) & (t <= t1)
+    if not m.any() or int(m.sum()) > limit:
+        return None
+    return {"type": "scatter", "mode": "markers", "name": "GPS fix", "hoverinfo": "x+y+name",
+            "x": [_dt.datetime.fromtimestamp(float(x), tz=_dt.timezone.utc).isoformat() for x in t[m]],
+            "y": _clean(v[m] * 3.6), "marker": {"size": 5, "color": "#2ac3de"}}
+
+
+def fused_fig(fused: dict, gps, xrange=None, budget: int = 3200) -> dict | None:
+    """Boat speed (km/h) from GPS refined by the hull unit's accelerometer, with the GPS fixes it rests on.
+    Blank where there is no steady GPS."""
+    if not fused:
+        return None
+    t0, t1 = _span(xrange, fused)
+    data = _signal_traces(_kmh(fused), t0, t1, budget, width=1.6, colors=[FUSED_COLOR])
+    if not data:
+        return None
+    g = _gps_trace(gps, t0, t1)
+    if g:
+        data.append(g)
+    layout = {**_BASE_LAYOUT, "height": 220, "xaxis": _xaxis("time", xrange),
+              "yaxis": {"title": "km/h", "fixedrange": True, "autorange": True}}
+    return {"data": data, "layout": layout}
+
+
+def signal_payload(oars: dict, hull: dict, catches_s, t0: float, t1: float, budget: int,
+                   fused: dict | None = None, gps=None) -> dict:
+    """JSON-ready traces for the sweep, hull and fused-speed charts over [t0, t1] (epoch seconds)."""
     out = {"sweep": _signal_traces(oars, t0, t1, budget) if oars else [],
-           "hull": _signal_traces(hull, t0, t1, budget, colors=[HULL_COLOR]) if hull else []}
-    c = _catch_trace(catches_s, t0, t1, "catch (stroke seat)")
-    out["catch"] = c
+           "hull": _signal_traces(hull, t0, t1, budget, colors=[HULL_COLOR]) if hull else [],
+           "fused": _signal_traces(_kmh(fused), t0, t1, budget, width=1.6, colors=[FUSED_COLOR]) if fused else []}
+    out["catch"] = _catch_trace(catches_s, t0, t1, "catch (stroke seat)")
+    out["gps"] = _gps_trace(gps, t0, t1) if fused else None
     return out
 
 
