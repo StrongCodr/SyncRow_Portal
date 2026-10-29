@@ -44,7 +44,7 @@ def _make_crew(offsets_s, axes, grav, amp=100.0, noise=0.5, seed=1):
 
 # ─── xcorr_lag: sign + magnitude ──────────────────────────────────────────
 
-def test_gaussian_lag_recovers_known_delay():
+def test_xcorr_lag_recovers_known_delay():
     t = np.arange(500) / FS
     a = np.sin(2 * np.pi * 1.0 * t)
     # b is `a` delayed (later) by 50 ms -> convention says POSITIVE lag.

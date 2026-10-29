@@ -286,7 +286,7 @@ def xcorr_lag(sig_ref: np.ndarray, sig_other: np.ndarray, fs: float,
     sample resolution. Both tiers run the identical step, so they never disagree.
 
     Convention: POSITIVE lag => sig_other lags (is later than) sig_ref. Verified
-    by test_gaussian_lag_recovers_known_delay.
+    by test_xcorr_lag_recovers_known_delay.
     """
     a = np.asarray(sig_ref, float)
     b = np.asarray(sig_other, float)
