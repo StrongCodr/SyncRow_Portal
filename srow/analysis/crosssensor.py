@@ -79,10 +79,6 @@ class StrokeSync:
     n_matched: int                       # count of OK seats
     flags: list[str] = field(default_factory=list)  # stroke-wide (OUT_OF_RANGE/DRILL/REF_DEGRADED)
 
-    def usable_seats(self) -> list[str]:
-        """Seats whose offset this stroke is trustworthy (fresh + well-matched)."""
-        return [s for s, st in self.seat_status.items() if st == OK]
-
     def is_piece_stroke(self) -> bool:
         """True if this stroke belongs in piece-level aggregates (not a drill /
         out-of-range / reference-void stroke). Individual seat quality is separate

@@ -8,7 +8,6 @@ Provides methods to:
 """
 
 from datetime import datetime
-from typing import Iterator
 
 import certifi
 import influxdb_client
@@ -403,104 +402,6 @@ from(bucket: "{safe_bucket}")
 
         return start_time, end_time
 
-    def load_time_range(
-        self,
-        tag_name: str,
-        interval_value: str,
-        start: datetime,
-        end: datetime,
-        measurement: str = "imu",
-    ) -> pd.DataFrame:
-        """Load data for a specific time window within an interval.
-
-        Used when user zooms into a specific region for detailed view.
-
-        Args:
-            tag_name: The tag key to filter on.
-            interval_value: The tag value to match.
-            start: Start of time window.
-            end: End of time window.
-            measurement: The measurement to query. Defaults to "imu".
-
-        Returns:
-            DataFrame with data only within the specified time range.
-        """
-        safe_tag = _escape_flux_string(tag_name)
-        safe_value = _escape_flux_string(interval_value)
-        safe_measurement = _escape_flux_string(measurement)
-        safe_bucket = _escape_flux_string(self.settings.bucket)
-
-        # Format timestamps for Flux
-        start_str = start.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-        end_str = end.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-
-        flux = f'''
-from(bucket: "{safe_bucket}")
-  |> range(start: {start_str}, stop: {end_str})
-  |> filter(fn: (r) => r._measurement == "{safe_measurement}")
-  |> filter(fn: (r) => r["{safe_tag}"] == "{safe_value}")
-  |> sort(columns: ["_time"])
-'''
-        tables = self.query_api().query(flux, org=self.settings.effective_org())
-
-        rows = []
-        for table in tables:
-            for record in table.records:
-                vals = record.values
-                rows.append({
-                    "time": record["_time"],
-                    "field": record["_field"],
-                    "value": record["_value"],
-                    "source": self._source_label(vals),
-                })
-
-        if not rows:
-            return pd.DataFrame()
-
-        df_long = pd.DataFrame(rows)
-        df_wide = df_long.pivot_table(
-            index=["time", "source"],
-            columns="field",
-            values="value",
-        ).reset_index()
-
-        return df_wide.sort_values(["time", "source"])
-
-    def load_interval_chunked(
-        self,
-        tag_name: str,
-        interval_value: str,
-        chunk_size: int = 50000,
-        measurement: str = "imu",
-    ) -> Iterator[pd.DataFrame]:
-        """Load interval data in chunks for memory efficiency.
-
-        Yields DataFrames in chunks to avoid loading entire dataset into memory.
-
-        Args:
-            tag_name: The tag key to filter on.
-            interval_value: The tag value to match.
-            chunk_size: Maximum rows per chunk. Defaults to 50000.
-            measurement: The measurement to query. Defaults to "imu".
-
-        Yields:
-            DataFrame chunks with sensor data.
-        """
-        # Get time bounds first
-        start, end = self.get_time_bounds(tag_name, interval_value, measurement)
-        if start is None or end is None:
-            return
-
-        # For now, just load full data and chunk it
-        # Future optimization: use streaming query
-        df = self.load_interval(tag_name, interval_value, measurement)
-
-        if df.empty:
-            return
-
-        for i in range(0, len(df), chunk_size):
-            yield df.iloc[i:i + chunk_size].copy()
-
     def unwrap_angles(self, df: pd.DataFrame, fields: list[str]) -> pd.DataFrame:
         """Unwrap angle fields to remove 360-degree discontinuities.
 
@@ -557,46 +458,6 @@ from(bucket: "{safe_bucket}")
             })
 
         return df.groupby("source").apply(summarize).reset_index()
-
-    def delete_interval(self, tag_name: str, interval_value: str) -> None:
-        """Delete all data for a specific interval.
-
-        Args:
-            tag_name: The tag key to filter on.
-            interval_value: The tag value to match.
-
-        Note:
-            May raise an error on serverless v3 buckets which don't support deletes.
-        """
-        start = "1970-01-01T00:00:00Z"
-        stop = "2100-01-01T00:00:00Z"
-        safe_value = _escape_flux_string(interval_value)
-        predicate = f'_measurement="imu" AND {tag_name}="{safe_value}"'
-        self.delete_api().delete(
-            start=start,
-            stop=stop,
-            predicate=predicate,
-            bucket=self.settings.bucket,
-            org=self.settings.effective_org(),
-        )
-
-    def delete_all_intervals(self) -> None:
-        """Delete all interval data from the bucket.
-
-        Warning:
-            This is a destructive operation. Use with caution.
-            May raise an error on serverless v3 buckets.
-        """
-        start = "1970-01-01T00:00:00Z"
-        stop = "2100-01-01T00:00:00Z"
-        predicate = '_measurement="imu" AND interval_id!=""'
-        self.delete_api().delete(
-            start=start,
-            stop=stop,
-            predicate=predicate,
-            bucket=self.settings.bucket,
-            org=self.settings.effective_org(),
-        )
 
     @staticmethod
     def _source_label(record_values: dict) -> str:

@@ -179,12 +179,6 @@ def _gps_arrays(tag: str, value: str):
     return gt, gv, ga
 
 
-def _analyze_offsets(tag: str, value: str):
-    """The engine's CrossResult for this interval (see _analysis), or None."""
-    b = _analysis(tag, value)
-    return b["cross"] if b else None
-
-
 @app.get("/interval", response_class=HTMLResponse)
 def interval(request: Request, tag: str, value: str):
     if not _user(request):

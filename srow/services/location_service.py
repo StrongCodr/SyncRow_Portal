@@ -8,9 +8,8 @@ from datetime import datetime
 import certifi
 import geopandas as gpd
 import influxdb_client
-import numpy as np
 import pandas as pd
-from shapely.geometry import Point, LineString
+from shapely.geometry import Point
 
 from srow.config import Settings
 
@@ -55,45 +54,6 @@ class LocationService:
     def ping(self) -> bool:
         """Check if InfluxDB is reachable."""
         return self._client.ping()
-
-    def fetch_location_intervals(self) -> list[dict]:
-        """Fetch all intervals that have phone_location data.
-
-        Returns:
-            List of dicts with keys: tag, value, label
-        """
-        tag_keys = ["intervalId", "interval_id", "intervalName"]
-        results = []
-        seen = set()
-        safe_bucket = _escape_flux_string(self.settings.bucket)
-
-        for tag in tag_keys:
-            flux = f'''
-import "influxdata/influxdb/schema"
-schema.tagValues(
-    bucket: "{safe_bucket}",
-    tag: "{tag}",
-    predicate: (r) => r._measurement == "{self.MEASUREMENT}"
-)
-'''
-            try:
-                tables = self.query_api().query(flux, org=self.settings.effective_org())
-                for table in tables:
-                    for record in table.records:
-                        val = record.get_value()
-                        if val is None or val == "":
-                            continue
-                        key = (tag, str(val))
-                        if key in seen:
-                            continue
-                        seen.add(key)
-                        label = str(val) if tag == "intervalId" else f"{val} ({tag})"
-                        results.append({"tag": tag, "value": str(val), "label": label})
-            except Exception:
-                # Measurement may not exist yet
-                continue
-
-        return sorted(results, key=lambda x: x["value"])
 
     def load_track(
         self,
@@ -176,65 +136,6 @@ from(bucket: "{safe_bucket}")
         gdf = gpd.GeoDataFrame(df_wide, geometry=geometry, crs="EPSG:4326")
 
         return gdf
-
-    def load_track_simplified(
-        self,
-        tag_name: str,
-        interval_value: str,
-        tolerance: float = 0.0001,
-    ) -> gpd.GeoDataFrame:
-        """Load GPS track with Douglas-Peucker simplification.
-
-        Reduces point count for faster overview rendering.
-        Tolerance of 0.0001 degrees is approximately 10 meters at equator.
-
-        Args:
-            tag_name: The tag key to filter on.
-            interval_value: The tag value to match.
-            tolerance: Simplification tolerance in degrees. Defaults to 0.0001.
-
-        Returns:
-            Simplified GeoDataFrame with reduced point count.
-        """
-        gdf = self.load_track(tag_name, interval_value)
-
-        if gdf.empty:
-            return gdf
-
-        # Group by device, create lines, simplify, extract points back
-        simplified_rows = []
-
-        for device_id, group in gdf.groupby("device_id"):
-            # Create LineString from points
-            points = [g for g in group.geometry if g is not None]
-            if len(points) < 2:
-                simplified_rows.extend(group.to_dict("records"))
-                continue
-
-            line = LineString(points)
-            simplified_line = line.simplify(tolerance)
-
-            # Get simplified coordinates
-            simplified_coords = list(simplified_line.coords)
-
-            # Match back to original data (approximate by nearest time)
-            # For simplicity, just keep first and last, plus evenly spaced
-            n_keep = min(len(simplified_coords), len(group))
-            indices = np.linspace(0, len(group) - 1, n_keep, dtype=int)
-
-            for idx in indices:
-                row = group.iloc[idx].to_dict()
-                simplified_rows.append(row)
-
-        if not simplified_rows:
-            return gpd.GeoDataFrame()
-
-        result_df = pd.DataFrame(simplified_rows)
-        return gpd.GeoDataFrame(
-            result_df,
-            geometry="geometry",
-            crs="EPSG:4326",
-        )
 
     def get_time_bounds(
         self,

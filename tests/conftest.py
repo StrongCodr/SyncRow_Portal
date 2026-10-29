@@ -1,11 +1,9 @@
 """Pytest fixtures and configuration for SyncRow tests."""
 
-import os
 import pytest
 import pandas as pd
 import geopandas as gpd
 from shapely.geometry import Point
-from unittest.mock import MagicMock
 
 from srow.config import Settings
 
@@ -70,16 +68,6 @@ def sample_location_data() -> gpd.GeoDataFrame:
     geometry = [Point(lon, lat) for lat, lon in zip(lats, lons)]
 
     return gpd.GeoDataFrame(df, geometry=geometry, crs="EPSG:4326")
-
-
-@pytest.fixture
-def mock_influx_client():
-    """Create a mock InfluxDB client."""
-    client = MagicMock()
-    client.ping.return_value = True
-    client.query_api.return_value = MagicMock()
-    client.delete_api.return_value = MagicMock()
-    return client
 
 
 @pytest.fixture

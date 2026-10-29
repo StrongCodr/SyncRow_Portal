@@ -60,7 +60,6 @@ HTMX swaps HTML fragments so there is no SPA framework.
 
 - **LocationService**: Handles GPS data queries. Key methods:
   - `load_track()`: Loads GPS points as GeoDataFrame
-  - `load_track_simplified()`: Simplified track for overview
   - `calculate_distance()`: Total distance in meters
   - `summarize_track()`: Track statistics
 
@@ -121,7 +120,7 @@ Browser: Plotly renders; zoom/pan/theme are client-side
 
 - Services tested with mocked InfluxDB client.
 - Fixtures in `tests/conftest.py`: `sample_settings`, `sample_imu_data`,
-  `sample_location_data`, `mock_influx_client`, `env_file`.
+  `sample_location_data`, `env_file`.
 
 ## Security Considerations
 
