@@ -20,7 +20,7 @@ repo; everything else here.
 - [x] Confidence + uncertainty from the x-corr peak ρ (same estimator that sets the offset), not catch-slope; `min_corr` gate.
 - [x] Per-seat offset uncertainty (CRB-style from ρ + window); stop reporting sub-jitter precision.
 - [x] All magic numbers in `config.AnalysisConfig`; local per-stroke window (rate-change robustness).
-- [x] Tests: `tests/test_analysis.py` — gaussian_lag sign, axis recovery, non-rowing exclusion, and **synthetic ground-truth** (recovers injected offsets ±sign).
+- [x] Tests: `tests/test_analysis.py` — xcorr_lag sign, axis recovery, non-rowing exclusion, and **synthetic ground-truth** (recovers injected offsets ±sign).
 - [ ] **HARDWARE ground-truth bench test** (two sensors tapped together / known injected delay) — synthetic proves the math; real rig still unproven.
 - [ ] Validate across ALL 7 intervals + a 2× (2-sensor) case, not just one.
 - [ ] Retire `analyze_async` in favor of the engine (CLI wrapper).

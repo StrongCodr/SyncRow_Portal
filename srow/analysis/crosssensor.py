@@ -191,7 +191,7 @@ def analyze_cross(frames: dict[str, SensorFrame], catches: dict[str, list[Catch]
             if _longest_gap_s(frames[s], t_ref - half, t_ref + half) > cfg.max_fresh_gap_s:
                 status[s] = DEGRADED
                 continue
-            est = gaussian_lag(ref_win, sigs[s][i0:i1], cfg.xcorr_grid_hz, max_lag)
+            est = xcorr_lag(ref_win, sigs[s][i0:i1], cfg.xcorr_grid_hz, max_lag)
             if est is None:
                 status[s] = DEGRADED
                 continue
@@ -254,7 +254,7 @@ def pairwise_lags(frames: dict[str, SensorFrame], ref: str, others: list[str],
     for s in others:
         b = sigs[s] - sigs[s].mean()
         c0 = float(np.dot(a, b))
-        est = gaussian_lag(sigs[ref], sigs[s], cfg.align_grid_hz, max_lag_s)
+        est = xcorr_lag(sigs[ref], sigs[s], cfg.align_grid_hz, max_lag_s)
         out[s] = (c0, (est.lag_s * 1000.0) if est is not None else None)
     return out
 
@@ -266,10 +266,10 @@ class LagEst:
     n: int         # window length in samples (for uncertainty scaling)
 
 
-def gaussian_lag(sig_ref: np.ndarray, sig_other: np.ndarray, fs: float,
+def xcorr_lag(sig_ref: np.ndarray, sig_other: np.ndarray, fs: float,
                  max_lag_s: float) -> LagEst | None:
     """Sub-sample lag of `sig_other` vs `sig_ref` by cross-correlation with
-    log-parabolic ("Gaussian") peak interpolation, plus the normalized peak
+    log-parabolic peak interpolation (fitting a parabola to the log of the three values around the peak, i.e. a Gaussian peak), plus the normalized peak
     correlation rho (the match confidence). RESEARCH.md §6.3.
 
     SHARED SPEC — this is the phone's StrokeAnalyzer.crossLag in numpy form; keep
@@ -324,3 +324,6 @@ def gaussian_lag(sig_ref: np.ndarray, sig_other: np.ndarray, fs: float,
     denom = lm1 - 2 * l0 + lp1
     delta = 0.5 * (lm1 - lp1) / denom if denom != 0 else 0.0
     return LagEst(float(lags[k] + delta) / fs, rho, n)
+
+
+gaussian_lag = xcorr_lag   # former name; kept for the analysis scripts outside the package

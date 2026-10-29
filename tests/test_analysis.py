@@ -11,7 +11,7 @@ import dataclasses
 import numpy as np
 from srow.analysis.config import DEFAULT
 
-from srow.analysis.crosssensor import gaussian_lag, is_rowing
+from srow.analysis.crosssensor import xcorr_lag, is_rowing
 from srow.analysis.detect import detect_catches
 from srow.analysis.engine import analyze_interval
 from srow.analysis.frame import _axis, build_sensor_frame
@@ -42,25 +42,25 @@ def _make_crew(offsets_s, axes, grav, amp=100.0, noise=0.5, seed=1):
     return by_source
 
 
-# ─── gaussian_lag: sign + magnitude ──────────────────────────────────────────
+# ─── xcorr_lag: sign + magnitude ──────────────────────────────────────────
 
 def test_gaussian_lag_recovers_known_delay():
     t = np.arange(500) / FS
     a = np.sin(2 * np.pi * 1.0 * t)
     # b is `a` delayed (later) by 50 ms -> convention says POSITIVE lag.
     b_late = np.sin(2 * np.pi * 1.0 * (t - 0.05))
-    est = gaussian_lag(a, b_late, FS, max_lag_s=0.2)
+    est = xcorr_lag(a, b_late, FS, max_lag_s=0.2)
     assert est is not None and abs(est.lag_s - 0.05) < 0.005, est
     assert est.rho > 0.95   # near-identical waveforms => high match confidence
 
     # b earlier by 30 ms -> NEGATIVE lag.
     b_early = np.sin(2 * np.pi * 1.0 * (t + 0.03))
-    est2 = gaussian_lag(a, b_early, FS, max_lag_s=0.2)
+    est2 = xcorr_lag(a, b_early, FS, max_lag_s=0.2)
     assert est2 is not None and abs(est2.lag_s + 0.03) < 0.005, est2
 
     # uncorrelated noise => low rho (would flag low_confidence).
     rng = np.random.default_rng(7)
-    est3 = gaussian_lag(a, rng.normal(0, 1, t.size), FS, max_lag_s=0.2)
+    est3 = xcorr_lag(a, rng.normal(0, 1, t.size), FS, max_lag_s=0.2)
     assert est3 is not None and abs(est3.rho) < 0.5, est3
 
 
@@ -216,7 +216,7 @@ def test_adaptive_axis_relocks_after_reorientation():
 # ─── golden vector: the two tiers' offset estimators must stay byte-for-byte equal ─
 
 def test_golden_vector_matches_phone():
-    """gaussian_lag on a FIXED deterministic input reproduces these exact numbers. The
+    """xcorr_lag on a FIXED deterministic input reproduces these exact numbers. The
     phone test `crossLag matches portal golden vector` asserts the SAME constants, so any
     drift between the two estimators breaks one side. The magnitudes also PIN the
     documented conservative sub-sample bias (an injected +40 ms shift reads ~34.5 ms)."""
@@ -229,7 +229,7 @@ def test_golden_vector_matches_phone():
     ref = wave(0)
     golden = {0: (0.0, 1.0), 4: (34.52485, 0.99948), -7: (-67.92291, 1.0)}
     for shift, (lag_ms, rho) in golden.items():
-        est = gaussian_lag(ref, wave(shift), fs, max_lag_s=0.2)
+        est = xcorr_lag(ref, wave(shift), fs, max_lag_s=0.2)
         assert est is not None
         assert abs(est.lag_s * 1000.0 - lag_ms) < 0.02, (shift, est.lag_s * 1000.0, lag_ms)
         assert abs(est.rho - rho) < 0.001, (shift, est.rho, rho)
