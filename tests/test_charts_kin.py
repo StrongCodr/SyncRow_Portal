@@ -73,3 +73,19 @@ def test_loop_chart_hides_flagged_by_default_carries_stroke_ids_and_draws_a_crew
     assert sum(tr["meta"]["kind"] == "crew" for tr in fig4["data"]) == 4 and "yaxis4" in fig4["layout"]
     assert fig4["layout"]["yaxis3"]["domain"][1] < fig4["layout"]["yaxis"]["domain"][0]       # second row below the first
     assert charts.kin_summary(kin, {"Seat 1": {0, 2}})[0]["flagged"] == 2
+
+
+def test_kin_window_keeps_only_strokes_in_span_and_remaps_flags():
+    kin = _kin()
+    k = kin["Seat 1"]; t_mid = k.strokes[5].t0
+    win, fl = charts.kin_window(kin, {"Seat 1": {5, 6, 40}}, t_mid - 0.1, t_mid + 7.0)
+    assert [s.t0 for s in win["Seat 1"].strokes][0] == t_mid and len(win["Seat 1"].strokes) <= 4
+    assert fl["Seat 1"] == {0, 1}
+    assert charts.loop_fig(win, fl, y="rate")
+
+
+def test_speed_yrange_covers_both_speed_sources():
+    gdf = pd.DataFrame({"speed": [2.0, 3.0, 2.5]})
+    yr = charts.speed_yrange(gdf, {"Cox": (np.arange(3), np.array([2.0, 4.0, 3.0]))})
+    assert yr[0] == 0 and 14.3 < yr[1] < 15.7            # 4 m/s = 14.4 km/h, padded
+    assert charts.speed_yrange(None, None) is None

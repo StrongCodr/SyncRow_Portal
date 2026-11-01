@@ -31,13 +31,13 @@
   </section>
 
   <section>
-    <h4 class="text-sm font-medium text-subtle mb-1">Oar sweep (angular velocity, drive positive; catches of the stroke seat marked)</h4>
-    <div id="chart-sweep" style="height:300px;"></div>
+    <h4 class="text-sm font-medium text-subtle mb-1">Hull surge (fore-aft acceleration of the hull unit, drive positive)</h4>
+    <div id="chart-hull" style="height:240px;"></div>
   </section>
 
   <section>
-    <h4 class="text-sm font-medium text-subtle mb-1">Hull surge (fore-aft acceleration of the hull unit, drive positive)</h4>
-    <div id="chart-hull" style="height:240px;"></div>
+    <h4 class="text-sm font-medium text-subtle mb-1">Oar sweep (angular velocity, drive positive; catches of the stroke seat marked)</h4>
+    <div id="chart-sweep" style="height:300px;"></div>
   </section>
 
   <section>
@@ -199,9 +199,14 @@
               var lay = Object.assign({}, el.layout, {'xaxis': Object.assign({}, el.layout.xaxis, {range: xr, autorange: false}), 'yaxis': autoY(el.layout.yaxis)});
               syncing = true; Promise.resolve(Plotly.react('chart-imu', traces, lay, {responsive: true, displaylogo: false})).then(function () { syncing = false; }, function () { syncing = false; });
             }
+            // the two speed charts share one y scale over the visible span
+            var vmax = 0;
+            if (d.speed) d.speed.y.forEach(function (v) { if (v != null && v > vmax) vmax = v; });
+            (d.fused || []).forEach(function (t) { t.y.forEach(function (v) { if (v != null && v > vmax) vmax = v; }); });
+            var speedY = function (y) { var o = Object.assign({}, y || {}); o.fixedrange = true; if (vmax > 0) { o.range = [0, vmax * 1.08]; o.autorange = false; } else { delete o.range; o.autorange = true; } return o; };
             var sp = document.getElementById('chart-speed');
             if (d.speed && sp && plotted.indexOf('chart-speed') >= 0) {
-              var lay2 = Object.assign({}, sp.layout, {'xaxis': Object.assign({}, sp.layout.xaxis, {range: xr, autorange: false}), 'yaxis': autoY(sp.layout.yaxis)});
+              var lay2 = Object.assign({}, sp.layout, {'xaxis': Object.assign({}, sp.layout.xaxis, {range: xr, autorange: false}), 'yaxis': speedY(sp.layout.yaxis)});
               syncing = true; Promise.resolve(Plotly.react('chart-speed', [{type: 'scatter', mode: 'lines', name: 'speed', x: d.speed.x, y: d.speed.y, line: {width: 1.5, color: '#2ac3de'}}], lay2, {responsive: true, displaylogo: false})).then(function () { syncing = false; }, function () { syncing = false; });
             }
             // engine-derived signals (oar sweep, hull surge, fused speed) at the same span, with the
@@ -211,11 +216,31 @@
               if (!gd || plotted.indexOf(pair[0]) < 0 || !traces || !traces.length) return;
               var tr = traces.map(function (t) { return {type: 'scatter', mode: 'lines', name: t.name, x: t.x, y: t.y, line: t.line}; });
               if (pair[2]) tr.push(pair[2]);
-              var lay3 = Object.assign({}, gd.layout, {'xaxis': Object.assign({}, gd.layout.xaxis, {range: xr, autorange: false}), 'yaxis': autoY(gd.layout.yaxis)});
+              var lay3 = Object.assign({}, gd.layout, {'xaxis': Object.assign({}, gd.layout.xaxis, {range: xr, autorange: false}), 'yaxis': (pair[0] === 'chart-fused' ? speedY(gd.layout.yaxis) : autoY(gd.layout.yaxis))});
               syncing = true; Promise.resolve(Plotly.react(pair[0], tr, lay3, {responsive: true, displaylogo: false})).then(function () { syncing = false; }, function () { syncing = false; });
             });
+            refineLoops(range, seq);
             var lbl = document.getElementById('res-label');
             if (lbl) lbl.textContent = (d.window_ms === null ? 'raw frames' : (d.window_ms >= 1000 ? (d.window_ms / 1000) + ' s' : d.window_ms + ' ms') + ' buckets') + ', ' + d.n + ' points';
+            if (window.restyleCharts) restyleCharts();
+          }).catch(function () {});
+      }
+      // The stroke charts (arc, loops, side view, mean stroke) show only the strokes inside the visible span.
+      var loopsUrl = '/interval/loops?tag={{ tag|urlencode }}&value={{ value|urlencode }}';
+      function refineLoops(range, seq) {
+        fetch(loopsUrl + '&start=' + encodeURIComponent(toIso(range[0])) + '&stop=' + encodeURIComponent(toIso(range[1])), {credentials: 'same-origin'})
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (d) {
+            if (!d || seq !== refineSeq) return;
+            var showFlagged = document.querySelector('.show-flagged') && document.querySelector('.show-flagged').checked;
+            [['chart-arc', d.arc], ['chart-loop', d.loop], ['chart-side', d.side], ['chart-stroke-time', d.stroke_time]].forEach(function (pair) {
+              var el = document.getElementById(pair[0]); if (!el) return;
+              if (!pair[1]) { try { Plotly.purge(el); } catch (e) {} el.innerHTML = '<div class="text-subtle text-sm p-3">no strokes in this span</div>'; return; }
+              if (showFlagged) pair[1].data.forEach(function (t) { if (t.meta && t.meta.kind === 'flagged') t.visible = true; });
+              Plotly.react(pair[0], pair[1].data, pair[1].layout, {responsive: true, displaylogo: false});
+              pickTraces[pair[0]] = undefined;
+            });
+            document.querySelectorAll('label:has(.show-flagged)').forEach(function (l) { var t = l.childNodes[l.childNodes.length - 1]; if (t && t.nodeType === 3 && t.textContent.indexOf('(') >= 0) t.textContent = 'show flagged (' + d.n_flagged + ' of ' + d.n_strokes + ')'; });
             if (window.restyleCharts) restyleCharts();
           }).catch(function () {});
       }

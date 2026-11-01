@@ -181,7 +181,21 @@ def offsets_boat(cross) -> str | None:
     return f"{np.median(spreads):.0f} ms typical, {np.percentile(spreads, 90):.0f} ms worst"
 
 
-def speed_fig(gdf, xrange=None) -> dict | None:
+def speed_yrange(gdf, fused: dict | None) -> list | None:
+    """One y range (km/h) for the GPS speed chart and the refined speed chart, so they read on the same scale."""
+    vals = []
+    if gdf is not None and len(gdf) and "speed" in gdf.columns:
+        v = pd.to_numeric(gdf["speed"], errors="coerce").to_numpy(float) * 3.6; vals.append(v[np.isfinite(v) & (v >= 0)])
+    for _, (_, v) in (fused or {}).items():
+        v = np.asarray(v, float) * 3.6; vals.append(v[np.isfinite(v)])
+    allv = np.concatenate(vals) if vals else np.array([])
+    if allv.size == 0:
+        return None
+    hi = float(np.percentile(allv, 99.5)) * 1.08
+    return [0.0, max(hi, 1.0)]
+
+
+def speed_fig(gdf, xrange=None, yrange=None) -> dict | None:
     """Boat speed (km/h) over time from GPS."""
     if gdf is None or len(gdf) == 0 or "speed" not in gdf.columns:
         return None
@@ -196,8 +210,10 @@ def speed_fig(gdf, xrange=None) -> dict | None:
         "x": _times(t), "y": _clean(speed),
         "line": {"width": 1.5, "color": "#2ac3de"},
     }]
-    layout = {**_BASE_LAYOUT, "height": 200, "showlegend": False,
-              "xaxis": _xaxis("time", xrange), "yaxis": {"title": "km/h", "fixedrange": True, "autorange": True}}
+    yax = {"title": "km/h", "fixedrange": True, "autorange": True}
+    if yrange:
+        yax = {"title": "km/h", "fixedrange": True, "range": yrange}
+    layout = {**_BASE_LAYOUT, "height": 200, "showlegend": False, "xaxis": _xaxis("time", xrange), "yaxis": yax}
     return {"data": data, "layout": layout}
 
 
@@ -301,7 +317,7 @@ def _gps_trace(gps, t0: float, t1: float, limit: int = 600) -> dict | None:
             "y": _clean(v[m] * 3.6), "marker": {"size": 5, "color": "#2ac3de"}}
 
 
-def fused_fig(fused: dict, gps, xrange=None, budget: int = 3200) -> dict | None:
+def fused_fig(fused: dict, gps, xrange=None, budget: int = 3200, yrange=None) -> dict | None:
     """Boat speed (km/h) from GPS refined by the hull unit's accelerometer, with the GPS fixes it rests on.
     Blank where there is no steady GPS."""
     if not fused:
@@ -313,8 +329,10 @@ def fused_fig(fused: dict, gps, xrange=None, budget: int = 3200) -> dict | None:
     g = _gps_trace(gps, t0, t1)
     if g:
         data.append(g)
-    layout = {**_BASE_LAYOUT, "height": 220, "xaxis": _xaxis("time", xrange),
-              "yaxis": {"title": "km/h", "fixedrange": True, "autorange": True}}
+    yax = {"title": "km/h", "fixedrange": True, "autorange": True}
+    if yrange:
+        yax = {"title": "km/h", "fixedrange": True, "range": yrange}
+    layout = {**_BASE_LAYOUT, "height": 220, "xaxis": _xaxis("time", xrange), "yaxis": yax}
     return {"data": data, "layout": layout}
 
 
@@ -398,6 +416,26 @@ def series_payload(imu_df: pd.DataFrame | None, gps_df: pd.DataFrame | None, win
 FLAG_COLOR = "#f7768e"
 WATER_COLOR = "rgba(42,195,222,0.12)"
 MAX_LOOP_STROKES = 400
+
+
+class _KinView:
+    """A kinematics object restricted to the strokes whose catch falls in a time span; arrays are
+    shared, only the stroke list changes. Flag indices are remapped by the caller."""
+    def __init__(self, k, strokes):
+        self.source, self.grid, self.sweep_rate, self.sweep_angle, self.elev_deg, self.feather_deg, self.quality = \
+            k.source, k.grid, k.sweep_rate, k.sweep_angle, k.elev_deg, k.feather_deg, k.quality
+        self.strokes = strokes
+
+
+def kin_window(kin: dict, flags: dict | None, t0: float, t1: float) -> tuple[dict, dict]:
+    """(kin, flags) restricted to strokes with t0 <= catch <= t1. Colours stay those of the full set."""
+    out, fl = {}, {}
+    for src, k in kin.items():
+        keep = [i for i, s in enumerate(k.strokes) if t0 <= s.t0 <= t1]
+        out[src] = _KinView(k, [k.strokes[i] for i in keep])
+        old = (flags or {}).get(src, set())
+        fl[src] = {n for n, i in enumerate(keep) if i in old}
+    return out, fl
 
 
 def _kin_colors(kin: dict) -> dict:

@@ -421,11 +421,11 @@ def interval(request: Request, tag: str, value: str):
             "offsets_json": json.dumps(charts.offsets_fig(cross, xrange)),
             "offsets_summary": charts.offsets_summary(cross),
             "offsets_boat": charts.offsets_boat(cross),
-            "speed_json": json.dumps(charts.speed_fig(gdf, xrange)),
+            "speed_json": json.dumps(charts.speed_fig(gdf, xrange, yrange=charts.speed_yrange(gdf, bundle.get("fused")))),
             "imu_json": json.dumps(charts.imu_fig(df, xrange)),
             "sweep_json": json.dumps(charts.sweep_fig(bundle.get("oars"), bundle.get("catches"), xrange)),
             "hull_json": json.dumps(charts.hull_fig(bundle.get("hull"), bundle.get("catches"), xrange)),
-            "fused_json": json.dumps(charts.fused_fig(bundle.get("fused"), bundle.get("gps"), xrange)),
+            "fused_json": json.dumps(charts.fused_fig(bundle.get("fused"), bundle.get("gps"), xrange, yrange=charts.speed_yrange(gdf, bundle.get("fused")))),
             "track_json": json.dumps(charts.track_data(gdf)),
         },
     )
@@ -485,6 +485,25 @@ def _series(tag: str, value: str, start: dt.datetime, stop: dt.datetime, px: int
     payload["attitude"] = charts.attitude_traces(b.get("attitude"), start.timestamp(), stop.timestamp(), budget)
     payload["start"], payload["stop"], payload["px"] = start.isoformat(), stop.isoformat(), px
     return payload
+
+
+@app.get("/interval/loops")
+def interval_loops(request: Request, tag: str, value: str, start: str, stop: str):
+    """The loop, side-view, arc and mean-stroke charts for the strokes inside [start, stop] (the zoomed span)."""
+    if not _user(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        t0 = dt.datetime.fromisoformat(start.replace("Z", "+00:00")).timestamp(); t1 = dt.datetime.fromisoformat(stop.replace("Z", "+00:00")).timestamp()
+        b = _analysis(tag, value) or {}
+        kin, flags = charts.kin_window(b.get("kin") or {}, b.get("flags") or {}, t0, t1)
+        kin = {k: v for k, v in kin.items() if v.strokes}
+        rig = _run_setup(value)["rig"]
+        cross = b.get("cross")
+        return JSONResponse({"loop": charts.loop_fig(kin, flags, y="rate"), "side": charts.loop_fig(kin, flags, y="height", rig=rig),
+                             "arc": charts.arc_fig(kin), "stroke_time": charts.stroke_time_fig(kin, b.get("hull"), cross.reference if cross else None),
+                             "summary": charts.kin_summary(kin, flags), "n_flagged": sum(len(v) for v in flags.values()), "n_strokes": sum(len(k.strokes) for k in kin.values())})
+    except Exception as e:  # pragma: no cover
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 @app.get("/interval/series")
