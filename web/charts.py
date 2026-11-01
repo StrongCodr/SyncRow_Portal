@@ -735,26 +735,47 @@ def attitude_fig(att, catches_s, xrange=None, budget: int = 3200) -> dict | None
     return {"data": data, "layout": layout}
 
 
-def feather_fig(kin: dict, xrange=None) -> dict | None:
+def feather_fig(kin: dict, xrange=None, flags: dict | None = None) -> dict | None:
     """Per stroke and oar: how long before the catch the blade was square, and how long after the
-    release it was feathered (ms). One point per stroke on the piece's time axis."""
+    release it was feathered (ms). One point per stroke on the piece's time axis. Strokes the engine
+    did not trust are separate traces, hidden until the page's "show flagged" toggle; the y axis
+    follows the visible points on screen."""
     if not kin:
         return None
     import datetime as _dt
-    cols = _kin_colors(kin)
+    cols = _kin_colors(kin); flags = flags or {}
     data = []
     for src, k in kin.items():
         for attr, sym, nm in (("square_before_ms", "circle", "squared before the catch"), ("feather_after_ms", "diamond-open", "feathered after the release")):
-            xs = [_dt.datetime.fromtimestamp(s.t0, tz=_dt.timezone.utc).isoformat() for s in k.strokes if getattr(s, attr) is not None]
-            ys = [round(getattr(s, attr)) for s in k.strokes if getattr(s, attr) is not None]
-            if xs:
-                data.append({"type": "scatter", "mode": "markers", "name": f"{src}: {nm}", "x": xs, "y": ys,
-                             "marker": {"size": 5, "color": cols[src], "symbol": sym}})
+            for kind in ("strokes", "flagged"):
+                idx = [i for i, s in enumerate(k.strokes) if getattr(s, attr) is not None and ((i in flags.get(src, set())) == (kind == "flagged"))]
+                if not idx:
+                    continue
+                data.append({"type": "scatter", "mode": "markers", "name": f"{src}: {nm}" + (" (flagged)" if kind == "flagged" else ""),
+                             "x": [_dt.datetime.fromtimestamp(k.strokes[i].t0, tz=_dt.timezone.utc).isoformat() for i in idx],
+                             "y": [round(getattr(k.strokes[i], attr)) for i in idx],
+                             "marker": {"size": 5, "color": FLAG_COLOR if kind == "flagged" else cols[src], "symbol": sym},
+                             "meta": {"src": str(src), "kind": kind}, "visible": kind != "flagged", "showlegend": kind != "flagged"})
     if not data:
         return None
     layout = {**_BASE_LAYOUT, "height": 260, "xaxis": _xaxis("time (one point per stroke)", xrange),
               "yaxis": {"title": "ms", "fixedrange": True, "autorange": True, "zeroline": True}}
+    yr = visible_yrange(data, xrange)
+    if yr:
+        layout["yaxis"] = {"title": "ms", "fixedrange": True, "zeroline": True, "range": yr}
     return {"data": data, "layout": layout}
+
+
+def visible_yrange(data: list[dict], xrange, pad: float = 0.20) -> list | None:
+    """[lo, hi] of the points whose x (ISO time) falls inside xrange, padded by `pad` of the span
+    on each side; None without a range or points. The page does the same on every zoom."""
+    if not xrange:
+        return None
+    ys = [y for tr in data if tr.get("visible", True) is True for x, y in zip(tr["x"], tr["y"]) if y is not None and xrange[0] <= x <= xrange[1]]
+    if not ys:
+        return None
+    lo, hi = float(min(ys)), float(max(ys)); span = max(hi - lo, 1.0)
+    return [lo - pad * span, hi + pad * span]
 
 
 def gps_stats(gdf) -> dict | None:

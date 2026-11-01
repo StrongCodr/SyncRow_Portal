@@ -89,3 +89,19 @@ def test_speed_yrange_covers_both_speed_sources():
     yr = charts.speed_yrange(gdf, {"Cox": (np.arange(3), np.array([2.0, 4.0, 3.0]))})
     assert yr[0] == 0 and 14.3 < yr[1] < 15.7            # 4 m/s = 14.4 km/h, padded
     assert charts.speed_yrange(None, None) is None
+
+
+def test_feather_chart_y_axis_follows_the_points_on_screen():
+    import datetime as dt
+    kin = _kin()
+    s0 = kin["Seat 1"].strokes
+    iso = lambda t: dt.datetime.fromtimestamp(t, tz=dt.timezone.utc).isoformat()
+    full = charts.feather_fig(kin, [iso(s0[0].t0 - 1), iso(s0[-1].t1 + 1)])
+    part = charts.feather_fig(kin, [iso(s0[3].t0 - 0.1), iso(s0[6].t0 + 0.1)])
+    assert "range" in full["layout"]["yaxis"] and "range" in part["layout"]["yaxis"]
+    fr, pr = full["layout"]["yaxis"]["range"], part["layout"]["yaxis"]["range"]
+    assert pr[1] - pr[0] <= fr[1] - fr[0]                       # a narrower span never widens the axis
+    assert charts.feather_fig(kin, None)["layout"]["yaxis"].get("autorange") is True
+    fl = charts.feather_fig(kin, [iso(s0[0].t0 - 1), iso(s0[-1].t1 + 1)], {"Seat 1": {0, 1}})
+    hidden = [tr for tr in fl["data"] if tr["meta"]["kind"] == "flagged"]
+    assert hidden and all(tr["visible"] is False for tr in hidden)

@@ -338,17 +338,20 @@ def oar_kinematics(source: str, times_s, accel, gyro, euler, frame: SensorFrame,
         if cross.size:
             rel = float(grid[j0 + cross[0]])
         sq_before = ft_after = None
-        if flip is not None:
-            # squaring: the last time |feather| drops below 45° in the window from 0.6 T before the
-            # catch to 0.25 T after it (positive = squared before the catch)
-            back = max(0, i0 - int(0.6 * T * fs)); fwd = min(grid.size, i0 + int(0.25 * T * fs))
+        # feather events only on strokes with a clean feather plateau (about a quarter turn)
+        fe_ok = flip is not None and 55.0 <= float(np.ptp(feather[i0:i1])) <= 125.0
+        if fe_ok:
+            # squaring: the last time |feather| drops below 45° in the window from 0.35 T before the
+            # catch to 0.15 T after it (positive = squared before the catch); outside that window the
+            # blade cannot have been squared for this catch, so nothing is reported
+            back = max(0, i0 - int(0.35 * T * fs)); fwd = min(grid.size, i0 + int(0.15 * T * fs))
             c_sq = _crossings_down(np.abs(feather[back:fwd]), FEATHER_SQUARE_DEG)
             if c_sq.size:
                 sq_before = float((grid[i0] - grid[back + c_sq[-1]]) * 1000.0)
             if rel is not None:
-                # feathering: the first time |feather| rises past 45° from 0.4 T before the release to
-                # 0.6 T after it (negative = feathered before the blade stopped sweeping)
-                r0 = int(np.searchsorted(grid, rel)); b0 = max(i0, r0 - int(0.4 * T * fs)); b1 = min(grid.size, r0 + int(0.6 * T * fs))
+                # feathering: the first time |feather| rises past 45° from 0.25 T before the release to
+                # 0.35 T after it (negative = feathered before the blade stopped sweeping)
+                r0 = int(np.searchsorted(grid, rel)); b0 = max(i0, r0 - int(0.25 * T * fs)); b1 = min(grid.size, r0 + int(0.35 * T * fs))
                 up = np.where((np.abs(feather[b0:b1 - 1]) < FEATHER_SQUARE_DEG) & (np.abs(feather[b0 + 1:b1]) >= FEATHER_SQUARE_DEG))[0]
                 if up.size:
                     ft_after = float((grid[b0 + up[0] + 1] - rel) * 1000.0)

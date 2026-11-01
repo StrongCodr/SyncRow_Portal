@@ -417,7 +417,7 @@ def interval(request: Request, tag: str, value: str):
             "side_json": json.dumps(charts.loop_fig(kin, flags, y="height", rig=setup["rig"])),
             "stroke_time_json": json.dumps(charts.stroke_time_fig(kin, bundle.get("hull"), cross.reference if cross else None)),
             "attitude_json": json.dumps(charts.attitude_fig(bundle.get("attitude"), bundle.get("catches"), xrange)),
-            "feather_json": json.dumps(charts.feather_fig(kin, xrange)),
+            "feather_json": json.dumps(charts.feather_fig(kin, xrange, flags)),
             "offsets_json": json.dumps(charts.offsets_fig(cross, xrange)),
             "offsets_summary": charts.offsets_summary(cross),
             "offsets_boat": charts.offsets_boat(cross),

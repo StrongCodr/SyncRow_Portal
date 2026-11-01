@@ -127,7 +127,8 @@
       document.querySelectorAll('.show-flagged').forEach(function (cb) {
         cb.addEventListener('change', function () {
           document.querySelectorAll('.show-flagged').forEach(function (o) { o.checked = cb.checked; });
-          ['chart-loop', 'chart-side'].forEach(function (id) { var gd = document.getElementById(id); var idx = flaggedIdx(gd); if (idx.length) Plotly.restyle(id, {visible: cb.checked}, idx); });
+          ['chart-loop', 'chart-side', 'chart-feather'].forEach(function (id) { var gd = document.getElementById(id); if (!gd || !gd.data) return; var idx = flaggedIdx(gd); if (idx.length) Plotly.restyle(id, {visible: cb.checked}, idx); });
+          if (lastRange) featherY(lastRange);
         });
       });
       var pickTraces = {};
@@ -220,6 +221,7 @@
               syncing = true; Promise.resolve(Plotly.react(pair[0], tr, lay3, {responsive: true, displaylogo: false})).then(function () { syncing = false; }, function () { syncing = false; });
             });
             refineLoops(range, seq);
+            lastRange = xr; featherY(xr);
             var lbl = document.getElementById('res-label');
             if (lbl) lbl.textContent = (d.window_ms === null ? 'raw frames' : (d.window_ms >= 1000 ? (d.window_ms / 1000) + ' s' : d.window_ms + ' ms') + ' buckets') + ', ' + d.n + ' points';
             if (window.restyleCharts) restyleCharts();
@@ -243,6 +245,16 @@
             document.querySelectorAll('label:has(.show-flagged)').forEach(function (l) { var t = l.childNodes[l.childNodes.length - 1]; if (t && t.nodeType === 3 && t.textContent.indexOf('(') >= 0) t.textContent = 'show flagged (' + d.n_flagged + ' of ' + d.n_strokes + ')'; });
             if (window.restyleCharts) restyleCharts();
           }).catch(function () {});
+      }
+      // the feather chart keeps its points; its y axis follows the visible points on screen, ±20 %
+      var lastRange = null;
+      function featherY(xr) {
+        var gd = document.getElementById('chart-feather'); if (!gd || !gd.data || plotted.indexOf('chart-feather') < 0) return;
+        var a = new Date(xr[0]).getTime(), b = new Date(xr[1]).getTime(), lo = Infinity, hi = -Infinity;
+        gd.data.forEach(function (t) { if (t.visible === false || t.visible === 'legendonly') return; (t.x || []).forEach(function (x, i) { var y = t.y[i]; if (y == null) return; var tx = new Date(x).getTime(); if (tx >= a && tx <= b) { if (y < lo) lo = y; if (y > hi) hi = y; } }); });
+        if (lo === Infinity) return;
+        var span = Math.max(hi - lo, 1), pad = 0.2 * span;
+        syncing = true; Promise.resolve(Plotly.relayout('chart-feather', {'yaxis.range': [lo - pad, hi + pad], 'yaxis.autorange': false})).then(function () { syncing = false; }, function () { syncing = false; });
       }
       function scheduleRefine(range) { clearTimeout(refineTimer); refineTimer = setTimeout(function () { refine(range); }, 200); }
 
