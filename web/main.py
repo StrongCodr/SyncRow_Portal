@@ -24,6 +24,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
+from srow import boats
 from srow.config import load_settings
 from srow.services import InfluxService, LocationService
 from srow.analysis.load import load_raw_by_source
@@ -144,9 +145,125 @@ def interval_set_name(request: Request, tag: str = Form(...), value: str = Form(
     except Exception as e:  # pragma: no cover
         return HTMLResponse(f'<div class="text-red-400 text-sm">Could not save the name: {e}</div>')
     resp = templates.TemplateResponse(request=request, name="interval_header.html",
-                                      context={"tag": tag, "value": value, "name": name, "n": (int(n) if n.isdigit() else None)})
+                                      context={"tag": tag, "value": value, "name": name, "n": (int(n) if n.isdigit() else None),
+                                               "setup": _run_setup(value)})
     resp.headers["HX-Trigger"] = "intervals-changed"
     return resp
+
+
+WIND_DIRS = ("", "head", "tail", "cross")
+STREAMS = ("", "with", "against", "still")
+
+
+def _run_setup(value: str) -> dict:
+    """Everything the header and the charts need to know about the run's boat: its class and profile
+    as recorded, the profiles to choose from, the resolved rigging, and the conditions typed in."""
+    try:
+        meta = influx.fetch_interval_meta().get(value, {})
+    except Exception:  # pragma: no cover
+        meta = {}
+    try:
+        profiles, defaults = influx.fetch_boat_profiles()
+    except Exception:  # pragma: no cover
+        profiles, defaults = {}, {}
+    cls = meta.get("boat") if meta.get("boat") in boats.CLASSES else None
+    profile = boats.pick_profile(profiles, defaults, meta.get("profile"), cls)
+    rig = boats.resolve(cls, profile)
+    source = "profile" if profile is not None else ("class default" if cls else "assumed, no boat class recorded")
+    choices = sorted((p for p in profiles.values() if not p.deleted), key=lambda p: (p.cls, p.name.lower()))
+    return {"meta": meta, "cls": cls, "profile": profile, "profiles": choices, "defaults": defaults, "rig": rig,
+            "rig_source": source, "classes": boats.CLASSES, "wind_dirs": WIND_DIRS, "streams": STREAMS}
+
+
+@app.post("/interval/meta", response_class=HTMLResponse)
+def interval_set_meta(request: Request, tag: str = Form(...), value: str = Form(...), n: str = Form(""),
+                      boat: str = Form(""), profile: str = Form(""), wind_ms: str = Form(""), wind_dir: str = Form(""),
+                      stream: str = Form(""), water_temp_c: str = Form(""), conditions: str = Form("")):
+    """Record the run's boat class, profile and conditions (one interval_meta point) and return the header."""
+    if not _user(request):
+        return HTMLResponse("", status_code=401)
+    fields = {"boat": boat if boat in boats.CLASSES else "", "profile": profile.strip()[:40],
+              "wind_ms": _num_or_blank(wind_ms), "wind_dir": wind_dir if wind_dir in WIND_DIRS else "",
+              "stream": stream if stream in STREAMS else "", "water_temp_c": _num_or_blank(water_temp_c),
+              "conditions": conditions.strip()[:200]}
+    try:
+        influx.set_interval_meta(value, **fields)
+    except Exception as e:  # pragma: no cover
+        return HTMLResponse(f'<div class="text-red-400 text-sm">Could not save the run setup: {e}</div>')
+    return templates.TemplateResponse(request=request, name="interval_header.html",
+                                      context={"tag": tag, "value": value, "name": _interval_name(value),
+                                               "n": (int(n) if n.isdigit() else None), "setup": _run_setup(value)})
+
+
+def _num_or_blank(text: str) -> str:
+    try:
+        return f"{float(text):g}" if text.strip() else ""
+    except ValueError:
+        return ""
+
+
+# ─── Boats (profiles) ────────────────────────────────────────────────────────
+
+@app.get("/boats", response_class=HTMLResponse)
+def boats_page(request: Request, edit: str = ""):
+    if not _user(request):
+        return RedirectResponse("/login", status_code=303)
+    profiles, defaults = influx.fetch_boat_profiles()
+    live = sorted((p for p in profiles.values() if not p.deleted), key=lambda p: (p.cls, p.name.lower()))
+    editing = profiles.get(edit) if edit else None
+    return templates.TemplateResponse(request=request, name="boats.html", context={
+        "profiles": live, "defaults": defaults, "classes": boats.CLASSES, "fields": boats.FIELDS,
+        "class_defaults": boats.DEFAULTS, "editing": editing, "user": _user(request)})
+
+
+@app.post("/boats/save")
+async def boats_save(request: Request):
+    if not _user(request):
+        return RedirectResponse("/login", status_code=303)
+    form = await request.form()
+    pid = str(form.get("id") or "").strip() or f"p{int(dt.datetime.now(tz=dt.timezone.utc).timestamp() * 1000)}"
+    cls = form.get("cls") if form.get("cls") in boats.CLASSES else boats.FALLBACK_CLASS
+    overrides = {}
+    for k in boats.FIELDS:
+        raw = str(form.get(k) or "").strip()
+        if raw:
+            try:
+                overrides[k] = float(raw)
+            except ValueError:
+                pass
+    name = str(form.get("name") or "").strip()[:60] or f"{cls} boat"
+    influx.save_boat_profile(boats.BoatProfile(id=pid, name=name, cls=cls, overrides=overrides))
+    if form.get("make_default"):
+        _, defaults = influx.fetch_boat_profiles()
+        defaults[cls] = pid
+        influx.set_default_profiles(defaults)
+    return RedirectResponse("/boats", status_code=303)
+
+
+@app.post("/boats/default")
+def boats_default(request: Request, id: str = Form(...)):
+    if not _user(request):
+        return RedirectResponse("/login", status_code=303)
+    profiles, defaults = influx.fetch_boat_profiles()
+    p = profiles.get(id)
+    if p is not None:
+        defaults[p.cls] = id
+        influx.set_default_profiles(defaults)
+    return RedirectResponse("/boats", status_code=303)
+
+
+@app.post("/boats/delete")
+def boats_delete(request: Request, id: str = Form(...)):
+    if not _user(request):
+        return RedirectResponse("/login", status_code=303)
+    profiles, defaults = influx.fetch_boat_profiles()
+    p = profiles.get(id)
+    if p is not None:
+        p.deleted = True
+        influx.save_boat_profile(p)
+        if any(v == id for v in defaults.values()):
+            influx.set_default_profiles({k: v for k, v in defaults.items() if v != id})
+    return RedirectResponse("/boats", status_code=303)
 
 
 @lru_cache(maxsize=6)
@@ -246,6 +363,7 @@ def interval(request: Request, tag: str, value: str):
             "tag": tag,
             "value": value,
             "name": _interval_name(value),
+            "setup": _run_setup(value),
             "n": len(df) if df is not None else 0,
             "offsets_json": json.dumps(charts.offsets_fig(cross, xrange)),
             "offsets_summary": charts.offsets_summary(cross),

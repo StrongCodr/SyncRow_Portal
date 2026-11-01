@@ -4,8 +4,8 @@ The non-streaming InfluxService.load_* materializes all Flux records + a
 pivot_table and OOMs on a full raw interval (~GBs). This streams with
 query_stream, accumulates plain float lists per (source, field), and assembles
 numpy arrays — peak memory is the final data size (tens of MB), not the record
-overhead. Only accel+gyro are fetched (the engine's synthetic frame needs no
-Euler angles).
+overhead. Accel, gyro and the units' fused Euler angles are fetched (the engine's frame
+needs only accel+gyro; the kinematics use the Euler angles).
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import numpy as np
 
 from srow.services.influx_service import InfluxService
 
-_FIELDS = ("ax", "ay", "az", "wx", "wy", "wz")
+_FIELDS = ("ax", "ay", "az", "wx", "wy", "wz", "roll", "pitch", "yaw")
 _QUERY_TIMEOUT_MS = 120_000
 
 
@@ -33,7 +33,8 @@ def load_raw_by_source(settings, tag: str, value: str,
                        start: _dt.datetime, stop: _dt.datetime) -> dict[str, dict]:
     """Stream raw accel+gyro for one interval, grouped by sensor.
 
-    Returns {source: {"times_s": (N,), "accel": (N,3), "gyro": (N,3)}}.
+    Returns {source: {"times_s": (N,), "accel": (N,3), "gyro": (N,3), "euler": (N,3) or None}};
+    euler = the unit's own fused roll, pitch, yaw in degrees (None when the unit did not send them).
     """
     esc = str(value).replace("\\", "\\\\").replace('"', '\\"')
     bucket = settings.bucket.replace("\\", "\\\\").replace('"', '\\"')
@@ -42,7 +43,7 @@ from(bucket: "{bucket}")
   |> range(start: {_rfc3339(start)}, stop: {_rfc3339(stop)})
   |> filter(fn: (r) => r._measurement == "imu")
   |> filter(fn: (r) => r["{tag}"] == "{esc}")
-  |> filter(fn: (r) => contains(value: r._field, set: ["ax","ay","az","wx","wy","wz"]))
+  |> filter(fn: (r) => contains(value: r._field, set: ["ax","ay","az","wx","wy","wz","roll","pitch","yaw"]))
   |> sort(columns: ["_time"])
 '''
     client = influxdb_client.InfluxDBClient(
@@ -82,9 +83,11 @@ from(bucket: "{bucket}")
                 return np.interp(base_t, t, x, left=np.nan, right=np.nan)
             return np.full(n, np.nan)
 
+        euler = np.column_stack([col("roll"), col("pitch"), col("yaw")])
         out[src] = {
             "times_s": base_t,
             "accel": np.column_stack([col("ax"), col("ay"), col("az")]),
             "gyro": np.column_stack([col("wx"), col("wy"), col("wz")]),
+            "euler": euler if np.isfinite(euler).any() else None,
         }
     return out

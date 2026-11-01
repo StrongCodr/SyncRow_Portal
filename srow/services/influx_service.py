@@ -7,6 +7,7 @@ Provides methods to:
 - Delete intervals
 """
 
+import json
 import logging
 import time
 from datetime import datetime
@@ -226,37 +227,110 @@ from(bucket: "{_escape_flux_string(self.settings.bucket)}")
         return ids
 
     NAMES_MEASUREMENT = "interval_meta"
+    META_FIELDS = ("name", "boat", "profile", "wind_ms", "wind_dir", "stream", "water_temp_c", "conditions")
+    PROFILES_MEASUREMENT = "boat_profile"
+    DEFAULTS_PROFILE_TAG = "_defaults"
 
-    def fetch_interval_names(self) -> dict[str, str]:
-        """{intervalId: name} from the interval_meta measurement; the latest point per interval wins.
-        Empty names (a cleared name) are dropped. Never raises: a missing measurement gives {}."""
+    def fetch_interval_meta(self) -> dict[str, dict]:
+        """{intervalId: {field: value}} from the interval_meta measurement: the run's name, boat class,
+        boat profile and conditions. The latest point per interval and field wins; blank strings mean
+        "cleared" and are dropped. Never raises: a missing measurement gives {}."""
         flux = f'''
 from(bucket: "{_escape_flux_string(self.settings.bucket)}")
   |> range(start: {self.settings.query_lookback})
-  |> filter(fn: (r) => r._measurement == "{self.NAMES_MEASUREMENT}" and r._field == "name")
-  |> group(columns: ["intervalId"])
+  |> filter(fn: (r) => r._measurement == "{self.NAMES_MEASUREMENT}")
+  |> group(columns: ["intervalId", "_field"])
   |> last()
 '''
-        names: dict[str, str] = {}
+        meta: dict[str, dict] = {}
         try:
             for table in self.query_api().query(flux, org=self.settings.effective_org()):
                 for record in table.records:
-                    iv = record.values.get("intervalId"); name = record.get_value()
-                    if iv and isinstance(name, str) and name.strip():
-                        names[str(iv)] = name.strip()
+                    iv = record.values.get("intervalId"); field = record.values.get("_field"); val = record.get_value()
+                    if not iv or field not in self.META_FIELDS or val is None:
+                        continue
+                    if isinstance(val, str):
+                        val = val.strip()
+                        if not val:
+                            continue
+                    meta.setdefault(str(iv), {})[field] = val
         except Exception:  # pragma: no cover - a bucket without the measurement, or a read-only token
             return {}
-        return names
+        return meta
 
-    def set_interval_name(self, interval_id: str, name: str) -> None:
-        """Record a name for an interval (one interval_meta point, tagged with the id; an empty name clears it).
-        The app writes the same measurement, so a name set on either side shows on both."""
+    def fetch_interval_names(self) -> dict[str, str]:
+        """{intervalId: name}; see fetch_interval_meta."""
+        return {iv: m["name"] for iv, m in self.fetch_interval_meta().items() if m.get("name")}
+
+    def set_interval_meta(self, interval_id: str, **fields) -> None:
+        """Record metadata for an interval: one interval_meta point tagged with the id, carrying the
+        given fields. Every field is written as a string (numbers too), so a field's type never changes
+        between points and an empty string clears it on read; None skips a field.
+        The app writes the same measurement, so a name or boat class set on either side shows on both."""
         from influxdb_client import Point, WritePrecision
         from influxdb_client.client.write_api import SYNCHRONOUS
-        point = (Point(self.NAMES_MEASUREMENT).tag("intervalId", interval_id)
-                 .field("name", name.strip()).time(datetime.now(tz=__import__("datetime").timezone.utc), WritePrecision.MS))
+        point = Point(self.NAMES_MEASUREMENT).tag("intervalId", interval_id)
+        n = 0
+        for k, v in fields.items():
+            if k not in self.META_FIELDS or v is None:
+                continue
+            point = point.field(k, str(v).strip()); n += 1
+        if n == 0:
+            return
+        point = point.time(datetime.now(tz=__import__("datetime").timezone.utc), WritePrecision.MS)
         self._client.write_api(write_options=SYNCHRONOUS).write(
             bucket=self.settings.bucket, org=self.settings.effective_org(), record=point)
+
+    def set_interval_name(self, interval_id: str, name: str) -> None:
+        """Record a name for an interval (an empty name clears it)."""
+        self.set_interval_meta(interval_id, name=name)
+
+    def fetch_boat_profiles(self):
+        """(profiles, defaults): the user's boat profiles {id: BoatProfile} including deleted ones, and the
+        default profile id per class {cls: id}. One JSON document per profile in the boat_profile
+        measurement, tagged with the profile id; the latest point wins. Never raises."""
+        from srow.boats import BoatProfile
+        flux = f'''
+from(bucket: "{_escape_flux_string(self.settings.bucket)}")
+  |> range(start: {self.settings.query_lookback})
+  |> filter(fn: (r) => r._measurement == "{self.PROFILES_MEASUREMENT}" and r._field == "json")
+  |> group(columns: ["profile"])
+  |> last()
+'''
+        profiles: dict = {}; defaults: dict[str, str] = {}
+        try:
+            for table in self.query_api().query(flux, org=self.settings.effective_org()):
+                for record in table.records:
+                    pid = record.values.get("profile"); raw = record.get_value()
+                    if not pid or not isinstance(raw, str):
+                        continue
+                    try:
+                        doc = json.loads(raw)
+                    except ValueError:
+                        continue
+                    if pid == self.DEFAULTS_PROFILE_TAG:
+                        defaults = {str(k): str(v) for k, v in (doc or {}).items() if v}
+                    else:
+                        profiles[str(pid)] = BoatProfile.from_json(str(pid), doc or {})
+        except Exception:  # pragma: no cover
+            return {}, {}
+        return profiles, defaults
+
+    def _write_profile_doc(self, profile_id: str, doc: dict) -> None:
+        from influxdb_client import Point, WritePrecision
+        from influxdb_client.client.write_api import SYNCHRONOUS
+        point = (Point(self.PROFILES_MEASUREMENT).tag("profile", profile_id).field("json", json.dumps(doc))
+                 .time(datetime.now(tz=__import__("datetime").timezone.utc), WritePrecision.MS))
+        self._client.write_api(write_options=SYNCHRONOUS).write(
+            bucket=self.settings.bucket, org=self.settings.effective_org(), record=point)
+
+    def save_boat_profile(self, profile) -> None:
+        """Write a boat profile (whole document; the latest point wins)."""
+        self._write_profile_doc(profile.id, profile.to_json())
+
+    def set_default_profiles(self, defaults: dict[str, str]) -> None:
+        """Write the default profile id per class (whole mapping; the latest point wins)."""
+        self._write_profile_doc(self.DEFAULTS_PROFILE_TAG, dict(defaults))
 
     def load_interval(
         self,

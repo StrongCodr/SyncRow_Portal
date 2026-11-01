@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block body %}
+<main class="max-w-4xl mx-auto p-6 space-y-6">
+  <div class="flex items-baseline gap-3">
+    <h1 class="text-xl font-semibold text-text">Boats</h1>
+    <a href="/" class="text-xs text-subtle hover:text-accent">← intervals</a>
+    <a href="/logout" class="text-xs text-subtle hover:text-accent ml-auto" title="{{ user }}">logout</a>
+  </div>
+  <p class="text-sm text-subtle max-w-2xl">A boat profile starts from a class and keeps only the numbers you change; blank fields use the class default. The default profile of a class is what a run of that class is drawn with unless the run names a profile. Changing a profile changes every run that uses it; when you re-rig, make a new profile.</p>
+
+  <section>
+    <h2 class="text-sm font-medium text-subtle mb-2">Your boats</h2>
+    {% if profiles %}
+    <table class="w-full text-sm">
+      <thead><tr class="text-xs text-subtle text-left"><th class="py-1 pr-3">Name</th><th class="pr-3">Class</th><th class="pr-3">Overrides</th><th class="pr-3">Default</th><th></th></tr></thead>
+      <tbody>
+      {% for p in profiles %}
+      <tr class="border-t border-border">
+        <td class="py-1.5 pr-3 text-text">{{ p.name }}</td>
+        <td class="pr-3">{{ p.cls }}</td>
+        <td class="pr-3 text-subtle">{% for k, v in p.overrides.items() %}{{ fields[k][0] }} {{ v }} {{ fields[k][1] }}{% if not loop.last %}, {% endif %}{% else %}class defaults{% endfor %}</td>
+        <td class="pr-3">{% if defaults.get(p.cls) == p.id %}<span class="text-xs px-1.5 py-0.5 rounded border border-accent text-accent">default {{ p.cls }}</span>{% else %}
+          <form method="post" action="/boats/default" class="inline"><input type="hidden" name="id" value="{{ p.id }}"><button class="text-xs text-subtle hover:text-accent underline">make default for {{ p.cls }}</button></form>{% endif %}</td>
+        <td class="text-right whitespace-nowrap">
+          <a href="/boats?edit={{ p.id }}" class="text-xs text-subtle hover:text-accent underline mr-2">edit</a>
+          <form method="post" action="/boats/delete" class="inline" onsubmit="return confirm('Delete {{ p.name }}? Runs that use it fall back to the class default.')"><input type="hidden" name="id" value="{{ p.id }}"><button class="text-xs text-subtle hover:text-red-400 underline">delete</button></form>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}<div class="text-sm text-subtle">No profiles yet. Every class has built-in defaults; add a boat to override them.</div>{% endif %}
+  </section>
+
+  <section class="bg-surface border border-border rounded p-4">
+    <h2 class="text-sm font-medium text-subtle mb-2">{% if editing %}Edit {{ editing.name }}{% else %}Add a boat{% endif %}</h2>
+    <form method="post" action="/boats/save" class="space-y-3 text-sm" id="boat-form">
+      {% if editing %}<input type="hidden" name="id" value="{{ editing.id }}">{% endif %}
+      <div class="flex flex-wrap gap-4 items-end">
+        <label class="text-subtle text-xs">Name<br><input type="text" name="name" value="{{ editing.name if editing else '' }}" maxlength="60" required class="rounded bg-base text-text border border-border px-2 py-1 text-sm w-56"></label>
+        <label class="text-subtle text-xs">Class<br>
+          <select name="cls" id="boat-cls" class="rounded bg-base text-text border border-border px-2 py-1 text-sm">
+            {% for c in classes %}<option value="{{ c }}" {% if (editing.cls if editing else '2x') == c %}selected{% endif %}>{{ c }}</option>{% endfor %}
+          </select></label>
+      </div>
+      <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+        {% for k, (label, unit, dec) in fields.items() %}
+        <label class="text-subtle text-xs">{{ label }} ({{ unit }})<br>
+          <input type="number" step="any" name="{{ k }}" data-field="{{ k }}" value="{{ editing.overrides[k] if editing and k in editing.overrides else '' }}"
+                 class="rounded bg-base text-text border border-border px-2 py-1 text-sm w-full"></label>
+        {% endfor %}
+      </div>
+      <div class="flex items-center gap-4">
+        <label class="text-xs text-subtle"><input type="checkbox" name="make_default" value="1" class="mr-1">make it the default for its class</label>
+        <button type="submit" class="text-sm px-3 py-1 rounded border border-border text-text hover:text-accent hover:border-accent">save</button>
+        {% if editing %}<a href="/boats" class="text-xs text-subtle hover:text-accent">cancel</a>{% endif %}
+      </div>
+    </form>
+    <p class="text-xs text-subtle mt-3">Class defaults: masses are World Rowing minimums; rigging follows the Concept2 and row2k rigging guides; hull lengths are Empacher moulds; pin height above the water is oarlock height above the seat plus the seat's height above the waterline, the least certain number here, so measure yours.</p>
+  </section>
+  <script>
+    (function () {
+      var defaults = {{ class_defaults | tojson }};
+      var sel = document.getElementById('boat-cls');
+      function fill() {
+        var d = defaults[sel.value] || {};
+        document.querySelectorAll('#boat-form input[data-field]').forEach(function (i) { i.placeholder = (d[i.dataset.field] !== undefined) ? ('default ' + d[i.dataset.field]) : ''; });
+      }
+      sel.addEventListener('change', fill); fill();
+    })();
+  </script>
+</main>
+{% endblock %}

@@ -53,6 +53,7 @@ class SensorFrame:
     used_feather_fallback: bool  # PC1 was out-of-band; used PC2 instead
     stroke_axis_ok: bool       # a stroke-band axis was actually found (else PC1 kept blindly)
     held: np.ndarray           # bool per sample: gyro row identical to previous (zero-order-hold)
+    flip: np.ndarray | None = None   # feather-flip (shaft) axis in the sensor frame, when one was found
 
 
 def _autocorr_hz(proj: np.ndarray, times_s: np.ndarray) -> float:
@@ -363,5 +364,5 @@ def build_sensor_frame(times_s: np.ndarray, accel: np.ndarray, gyro: np.ndarray,
         dominant_hz=dominant_hz,                     # AUTOCORRELATION (harmonic-robust)
         sweep_energy=sweep_energy, fs=fs,
         used_feather_fallback=fb_rep, stroke_axis_ok=ok_rep,
-        held=held,
+        held=held, flip=flip_axis,
     )

@@ -9,3 +9,46 @@
     <button type="submit" class="text-xs px-2 py-1 rounded border border-border text-subtle hover:text-accent hover:border-accent">save</button>
   </form>
 </div>
+{% if setup %}
+{% set m = setup.meta %}
+<form class="mt-2 text-sm" hx-post="/interval/meta" hx-target="#interval-header" hx-swap="innerHTML">
+  <input type="hidden" name="tag" value="{{ tag }}"><input type="hidden" name="value" value="{{ value }}"><input type="hidden" name="n" value="{{ n if n is not none else '' }}">
+  <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+    <label class="text-subtle">Boat
+      <select name="boat" class="ml-1 rounded bg-base text-text border border-border px-1 py-0.5 text-sm focus:outline-none focus:border-accent">
+        <option value="" {% if not setup.cls %}selected{% endif %}>not set</option>
+        {% for c in setup.classes %}<option value="{{ c }}" {% if setup.cls == c %}selected{% endif %}>{{ c }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="text-subtle">Profile
+      <select name="profile" class="ml-1 rounded bg-base text-text border border-border px-1 py-0.5 text-sm focus:outline-none focus:border-accent">
+        <option value="" {% if not m.profile %}selected{% endif %}>default for the class</option>
+        {% for p in setup.profiles %}<option value="{{ p.id }}" {% if m.profile == p.id %}selected{% endif %}>{{ p.name }} ({{ p.cls }})</option>{% endfor %}
+      </select>
+    </label>
+    <a href="/boats" target="_blank" class="text-xs text-subtle hover:text-accent underline">boats…</a>
+    <span class="text-xs text-subtle" id="rig-summary">
+      {{ setup.rig.cls }}{% if setup.rig.profile_name %} · {{ setup.rig.profile_name }}{% endif %}
+      · outboard {{ '%.2f'|format(setup.rig.outboard_m) }} m · pin {{ '%.2f'|format(setup.rig.pin_height_m) }} m above water · hull {{ '%.1f'|format(setup.rig.hull_len_m) }} m
+      <span class="opacity-70">({{ setup.rig_source }})</span>
+    </span>
+    <button type="submit" class="text-xs px-2 py-1 rounded border border-border text-subtle hover:text-accent hover:border-accent">save</button>
+  </div>
+  <details class="mt-1" {% if m.wind_ms or m.wind_dir or m.stream or m.water_temp_c or m.conditions %}open{% endif %}>
+    <summary class="text-xs text-subtle cursor-pointer select-none">conditions</summary>
+    <div class="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1">
+      <label class="text-subtle text-xs">wind m/s <input type="number" step="0.1" min="0" name="wind_ms" value="{{ m.wind_ms or '' }}" class="w-16 rounded bg-base text-text border border-border px-1 py-0.5 text-sm"></label>
+      <label class="text-subtle text-xs">direction
+        <select name="wind_dir" class="rounded bg-base text-text border border-border px-1 py-0.5 text-sm">
+          {% for d in setup.wind_dirs %}<option value="{{ d }}" {% if (m.wind_dir or '') == d %}selected{% endif %}>{{ d or '–' }}</option>{% endfor %}
+        </select></label>
+      <label class="text-subtle text-xs">stream
+        <select name="stream" class="rounded bg-base text-text border border-border px-1 py-0.5 text-sm">
+          {% for d in setup.streams %}<option value="{{ d }}" {% if (m.stream or '') == d %}selected{% endif %}>{{ d or '–' }}</option>{% endfor %}
+        </select></label>
+      <label class="text-subtle text-xs">water °C <input type="number" step="0.5" name="water_temp_c" value="{{ m.water_temp_c or '' }}" class="w-16 rounded bg-base text-text border border-border px-1 py-0.5 text-sm"></label>
+      <label class="text-subtle text-xs">notes <input type="text" name="conditions" value="{{ m.conditions or '' }}" maxlength="200" placeholder="anything about the day" class="w-64 rounded bg-base text-text border border-border px-1 py-0.5 text-sm"></label>
+    </div>
+  </details>
+</form>
+{% endif %}
