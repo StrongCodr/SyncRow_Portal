@@ -173,12 +173,48 @@ schema.tagValues(bucket: "{_escape_flux_string(self.settings.bucket)}", tag: "{t
         # Sort by value (timestamp order)
         results = sorted(results, key=lambda x: x["value"])
 
-        # Add index and parsed datetime labels
+        # Add index, parsed datetime and the user's name (if one was set)
+        names = self.fetch_interval_names()
         for idx, item in enumerate(results, start=1):
             dt_str = _parse_interval_datetime(item["value"])
-            item["label"] = f"{idx}. {dt_str}"
+            item["date"] = dt_str
+            item["name"] = names.get(item["value"], "")
+            item["label"] = f"{idx}. {item['name'] or dt_str}"
 
         return results
+
+    NAMES_MEASUREMENT = "interval_meta"
+
+    def fetch_interval_names(self) -> dict[str, str]:
+        """{intervalId: name} from the interval_meta measurement; the latest point per interval wins.
+        Empty names (a cleared name) are dropped. Never raises: a missing measurement gives {}."""
+        flux = f'''
+from(bucket: "{_escape_flux_string(self.settings.bucket)}")
+  |> range(start: {self.settings.query_lookback})
+  |> filter(fn: (r) => r._measurement == "{self.NAMES_MEASUREMENT}" and r._field == "name")
+  |> group(columns: ["intervalId"])
+  |> last()
+'''
+        names: dict[str, str] = {}
+        try:
+            for table in self.query_api().query(flux, org=self.settings.effective_org()):
+                for record in table.records:
+                    iv = record.values.get("intervalId"); name = record.get_value()
+                    if iv and isinstance(name, str) and name.strip():
+                        names[str(iv)] = name.strip()
+        except Exception:  # pragma: no cover - a bucket without the measurement, or a read-only token
+            return {}
+        return names
+
+    def set_interval_name(self, interval_id: str, name: str) -> None:
+        """Record a name for an interval (one interval_meta point, tagged with the id; an empty name clears it).
+        The app writes the same measurement, so a name set on either side shows on both."""
+        from influxdb_client import Point, WritePrecision
+        from influxdb_client.client.write_api import SYNCHRONOUS
+        point = (Point(self.NAMES_MEASUREMENT).tag("intervalId", interval_id)
+                 .field("name", name.strip()).time(datetime.now(tz=__import__("datetime").timezone.utc), WritePrecision.MS))
+        self._client.write_api(write_options=SYNCHRONOUS).write(
+            bucket=self.settings.bucket, org=self.settings.effective_org(), record=point)
 
     def load_interval(
         self,

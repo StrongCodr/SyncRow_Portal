@@ -1,0 +1,13 @@
+<ul class="space-y-1 overflow-y-auto">
+  {% for iv in intervals %}
+  <li>
+    <button class="w-full text-left px-2 py-1.5 rounded text-sm text-text border border-transparent
+                   hover:bg-base hover:border-border transition"
+            hx-get="/interval?tag={{ iv.tag|urlencode }}&value={{ iv.value|urlencode }}"
+            hx-target="#content" title="{{ iv.value }}">
+      {% if iv.name %}<span class="font-medium">{{ loop.index }}. {{ iv.name }}</span>
+      <span class="block text-xs text-subtle">{{ iv.date }}</span>{% else %}{{ iv.label }}{% endif %}
+    </button>
+  </li>
+  {% endfor %}
+</ul>

@@ -162,3 +162,11 @@ VPS that also hosts InfluxDB. Driven from a laptop via
    both the web app and `analyze_async.py` can share it.
 2. Surface results either as a chart fragment (online) or CSV export
    (offline).
+
+## Interval names
+
+A user-given name for an interval lives in the `interval_meta` measurement: one point per change, tagged
+`intervalId`, string field `name`, latest point wins, an empty name clears it. The phone app writes it after an
+interval's upload (and on a later rename); the portal writes it from the rename form on the interval page
+(`POST /interval/name`) and reads it for the sidebar (`GET /intervals`) and the page header. The `intervalId`
+tag itself is always `Interval_<epoch ms>`; names never replace it.

@@ -113,6 +113,42 @@ def index(request: Request):
     )
 
 
+@app.get("/intervals", response_class=HTMLResponse)
+def intervals_list(request: Request):
+    """The sidebar's interval list on its own, re-fetched after a rename (htmx)."""
+    if not _user(request):
+        return HTMLResponse("", status_code=401)
+    try:
+        intervals = influx.fetch_interval_tags()
+    except Exception:  # pragma: no cover
+        intervals = []
+    return templates.TemplateResponse(request=request, name="intervals.html", context={"intervals": intervals})
+
+
+def _interval_name(value: str) -> str:
+    try:
+        return influx.fetch_interval_names().get(value, "")
+    except Exception:  # pragma: no cover
+        return ""
+
+
+@app.post("/interval/name", response_class=HTMLResponse)
+def interval_set_name(request: Request, tag: str = Form(...), value: str = Form(...), name: str = Form(""), n: str = Form("")):
+    """Rename an interval. Writes one interval_meta point and returns the page header; the response
+    also tells the sidebar to refresh."""
+    if not _user(request):
+        return HTMLResponse("", status_code=401)
+    name = name.strip()[:80]
+    try:
+        influx.set_interval_name(value, name)
+    except Exception as e:  # pragma: no cover
+        return HTMLResponse(f'<div class="text-red-400 text-sm">Could not save the name: {e}</div>')
+    resp = templates.TemplateResponse(request=request, name="interval_header.html",
+                                      context={"tag": tag, "value": value, "name": name, "n": (int(n) if n.isdigit() else None)})
+    resp.headers["HX-Trigger"] = "intervals-changed"
+    return resp
+
+
 @lru_cache(maxsize=6)
 def _analysis(tag: str, value: str):
     """Run the analysis engine on RAW data for this interval, once per process (the raw load, PCA and
@@ -209,6 +245,7 @@ def interval(request: Request, tag: str, value: str):
         context={
             "tag": tag,
             "value": value,
+            "name": _interval_name(value),
             "n": len(df) if df is not None else 0,
             "offsets_json": json.dumps(charts.offsets_fig(cross, xrange)),
             "offsets_summary": charts.offsets_summary(cross),

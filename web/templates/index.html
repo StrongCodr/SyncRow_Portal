@@ -30,18 +30,9 @@
       {% if error %}
         <div class="text-red-400 text-xs">{{ error }}</div>
       {% endif %}
-      <ul class="space-y-1 overflow-y-auto">
-        {% for iv in intervals %}
-        <li>
-          <button class="w-full text-left px-2 py-1.5 rounded text-sm text-text border border-transparent
-                         hover:bg-base hover:border-border transition"
-                  hx-get="/interval?tag={{ iv.tag|urlencode }}&value={{ iv.value|urlencode }}"
-                  hx-target="#content">
-            {{ iv.label }}
-          </button>
-        </li>
-        {% endfor %}
-      </ul>
+      <div id="interval-list" hx-get="/intervals" hx-trigger="intervals-changed from:body" hx-swap="innerHTML">
+        {% include "intervals.html" %}
+      </div>
     </div>
   </aside>
 

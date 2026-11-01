@@ -1,8 +1,5 @@
 <div class="space-y-6 max-w-6xl">
-  <div class="flex items-baseline gap-2">
-    <h3 class="text-lg font-semibold text-text">{{ value }}</h3>
-    <span class="text-sm text-subtle" id="res-label">{{ n }} points</span>
-  </div>
+  <div id="interval-header">{% include "interval_header.html" %}</div>
 
   <section>
     <h4 class="text-sm font-medium text-subtle mb-1">Latency per stroke (ms behind + / ahead −)</h4>
