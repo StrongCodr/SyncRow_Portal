@@ -21,7 +21,14 @@ def _bp(x: np.ndarray, lo_hz: float, hi_hz: float, fs: float) -> np.ndarray:
     b, a = butter(2, [lo_hz / (fs / 2.0), hi_hz / (fs / 2.0)], "band"); return filtfilt(b, a, x, axis=0)
 
 
-def hull_surge(times_s, accel_g, catches_s=None, fs_out: float = 25.0, lp_hz: float = 4.0):
+def surge_axis(times_s, accel_g, catches_s=None, fs_out: float = 25.0) -> np.ndarray | None:
+    """The hull unit's fore-aft axis in its own sensor frame (unit vector, pointing the way the drive
+    pushes), from the same PCA and sign test as hull_surge; None with too little data."""
+    r = hull_surge(times_s, accel_g, catches_s, fs_out=fs_out, _want_axis=True)
+    return None if r is None else r
+
+
+def hull_surge(times_s, accel_g, catches_s=None, fs_out: float = 25.0, lp_hz: float = 4.0, _want_axis: bool = False):
     """(grid_s, surge_mps2): the hull's fore-aft acceleration on a uniform grid, drive positive.
 
     times_s: (N,) epoch seconds; accel_g: (N,3) accelerometer in g (held rows, identical to the
@@ -30,11 +37,11 @@ def hull_surge(times_s, accel_g, catches_s=None, fs_out: float = 25.0, lp_hz: fl
     """
     t = np.asarray(times_s, float); a = np.asarray(accel_g, float)
     if t.size < 64 or a.shape[0] != t.size:
-        return None, None
+        return None if _want_axis else (None, None)
     fresh = np.r_[True, np.any(a[1:] != a[:-1], axis=1)]
     t, a = t[fresh], a[fresh]
     if t.size < 64 or t[-1] - t[0] < 20.0:
-        return None, None
+        return None if _want_axis else (None, None)
     grid = np.arange(t[0], t[-1], 1.0 / fs_out)
     u = np.column_stack([np.interp(grid, t, a[:, i]) for i in range(3)]) * G0
     u = u - u.mean(axis=0)
@@ -57,7 +64,9 @@ def hull_surge(times_s, accel_g, catches_s=None, fs_out: float = 25.0, lp_hz: fl
     if sign == 0.0 or not np.isfinite(sign):
         d = s - s.mean(); sign = float(np.mean(d ** 3))          # right-skewed when the drive is positive
     if sign < 0:
-        s = -s
+        s = -s; axis = -axis
+    if _want_axis:
+        return axis
     return grid, s
 
 
