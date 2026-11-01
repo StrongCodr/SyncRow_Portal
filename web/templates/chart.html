@@ -40,6 +40,44 @@
   </section>
 
   <section>
+    <h4 class="text-sm font-medium text-subtle mb-1">Arc per oar (catch and finish angle per stroke, 0 = mid-arc)</h4>
+    {% if kin_summary %}
+    <div class="flex flex-wrap gap-x-5 gap-y-1 mb-2 text-sm">
+      {% for r in kin_summary %}
+      <span class="text-text">{{ r.seat }}: <span class="font-medium">arc {{ r.arc }}</span>
+        <span class="text-subtle">({{ r.n }} strokes; squared {{ r.square }}; feathered {{ r.feather }}{% if r.drive_sign == 'assumed' %}; drive direction assumed{% endif %})</span></span>
+      {% endfor %}
+    </div>
+    {% endif %}
+    <div id="chart-arc" style="height:170px;"></div>
+  </section>
+
+  <section>
+    <h4 class="text-sm font-medium text-subtle mb-1">Sweep rate against sweep angle (every stroke faint, the mean bold, flagged strokes red)</h4>
+    <div id="chart-loop" style="height:360px;"></div>
+  </section>
+
+  <section>
+    <h4 class="text-sm font-medium text-subtle mb-1">The oar seen from the side: blade height above the water against sweep angle (stern on the left; the water line is computed from the rigging, drive solid, recovery dotted)</h4>
+    <div id="chart-side" style="height:360px;"></div>
+  </section>
+
+  <section>
+    <h4 class="text-sm font-medium text-subtle mb-1">The mean stroke in time: hull acceleration and each oar's sweep rate aligned on the stroke seat's catch</h4>
+    <div id="chart-stroke-time" style="height:340px;"></div>
+  </section>
+
+  <section>
+    <h4 class="text-sm font-medium text-subtle mb-1">Hull roll and pitch (hull unit, mounting offset removed)</h4>
+    <div id="chart-attitude" style="height:240px;"></div>
+  </section>
+
+  <section>
+    <h4 class="text-sm font-medium text-subtle mb-1">Feather timing per stroke: squared this long before the catch, feathered this long after the release</h4>
+    <div id="chart-feather" style="height:260px;"></div>
+  </section>
+
+  <section>
     <h4 class="text-sm font-medium text-subtle mb-1">Gyro magnitude (per sensor)</h4>
     <div id="chart-imu" style="height:300px;"></div>
   </section>
@@ -67,6 +105,15 @@
       plot('chart-sweep',   {{ sweep_json   | safe }});
       plot('chart-hull',    {{ hull_json    | safe }});
       plot('chart-imu',     {{ imu_json     | safe }});
+      plot('chart-attitude', {{ attitude_json | safe }});
+      plot('chart-feather', {{ feather_json | safe }});
+      // the loop, arc and mean-stroke charts have no time axis: drawn once, kept out of the linked zoom
+      var staticIds = ['chart-arc', 'chart-loop', 'chart-side', 'chart-stroke-time'];
+      [['chart-arc', {{ arc_json | safe }}], ['chart-loop', {{ loop_json | safe }}], ['chart-side', {{ side_json | safe }}], ['chart-stroke-time', {{ stroke_time_json | safe }}]].forEach(function (pair) {
+        var el = document.getElementById(pair[0]);
+        if (pair[1]) { Plotly.newPlot(pair[0], pair[1].data, pair[1].layout, {responsive: true, displaylogo: false}); }
+        else { el.innerHTML = '<div class="text-subtle text-sm p-3">no data</div>'; }
+      });
       if (window.restyleCharts) restyleCharts();
 
       // Resolution-adaptive data: whatever span is visible, ask the server for at most ~4 points per
@@ -121,7 +168,7 @@
             }
             // engine-derived signals (oar sweep, hull surge, fused speed) at the same span, with the
             // catches (or, for the fused speed, the GPS fixes it rests on)
-            [['chart-sweep', d.sweep, d.catch], ['chart-hull', d.hull, d.catch], ['chart-fused', d.fused, d.gps]].forEach(function (pair) {
+            [['chart-sweep', d.sweep, d.catch], ['chart-hull', d.hull, d.catch], ['chart-fused', d.fused, d.gps], ['chart-attitude', d.attitude, d.catch]].forEach(function (pair) {
               var gd = document.getElementById(pair[0]); var traces = pair[1];
               if (!gd || plotted.indexOf(pair[0]) < 0 || !traces || !traces.length) return;
               var tr = traces.map(function (t) { return {type: 'scatter', mode: 'lines', name: t.name, x: t.x, y: t.y, line: t.line}; });

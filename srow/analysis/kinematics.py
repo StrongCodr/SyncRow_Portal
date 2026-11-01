@@ -57,8 +57,8 @@ class StrokeLoop:
     square_before_ms: float | None   # blade square this long before the catch
     feather_after_ms: float | None   # blade feathered this long after the release
     feather_range_deg: float
-    min_height_cm: float
-    max_height_cm: float
+    min_elev_deg: float
+    max_elev_deg: float
 
     @property
     def arc_deg(self) -> float:
@@ -75,7 +75,7 @@ class OarKinematics:
     grid: np.ndarray
     sweep_rate: np.ndarray        # deg/s, drive positive
     sweep_angle: np.ndarray       # deg
-    height_cm: np.ndarray         # blade height above the water; NaN without orientation or rigging
+    elev_deg: np.ndarray          # shaft elevation toward the blade (+ = blade end up); NaN without orientation
     feather_deg: np.ndarray       # 0 = square
     strokes: list[StrokeLoop]
     angle_reference: str          # "midpoint" (an absolute reference needs a calibration gesture)
@@ -186,11 +186,18 @@ def _crossings_down(x: np.ndarray, level: float) -> np.ndarray:
     return np.where((x[:-1] > level) & (x[1:] <= level))[0] + 1
 
 
+def blade_height_cm(elev_deg, rig) -> np.ndarray:
+    """Blade height above the water from the shaft's elevation and the rigging (pin height above the
+    water, outboard). The water line is computed, not measured: see the design's caveat."""
+    e = np.asarray(elev_deg, float)
+    return 100.0 * (rig.pin_height_m + rig.outboard_m * np.sin(np.radians(e)))
+
+
 def oar_kinematics(source: str, times_s, accel, gyro, euler, frame: SensorFrame, catches_s,
-                   rig=None, fs: float = FS_OUT) -> OarKinematics | None:
-    """Per-sample sweep rate, sweep angle, blade height and feather for one oar unit on a uniform grid,
-    plus the per-stroke loops. `frame` is the engine's SensorFrame for this unit (sign-aligned to the
-    stroke seat), `catches_s` this unit's catches, `rig` a srow.boats.Rigging (for centimetres)."""
+                   fs: float = FS_OUT) -> OarKinematics | None:
+    """Per-sample sweep rate, sweep angle, shaft elevation and feather for one oar unit on a uniform
+    grid, plus the per-stroke loops. `frame` is the engine's SensorFrame for this unit (sign-aligned to
+    the stroke seat), `catches_s` this unit's catches. Centimetres come from blade_height_cm."""
     times_s = np.asarray(times_s, float); accel = np.asarray(accel, float); gyro = np.asarray(gyro, float)
     euler = None if euler is None else np.asarray(euler, float)
     if euler is not None and not np.isfinite(euler[:, :2]).any():
@@ -272,7 +279,7 @@ def oar_kinematics(source: str, times_s, accel, gyro, euler, frame: SensorFrame,
     else:
         feather = np.zeros(grid.size)
 
-    height = np.full(grid.size, np.nan)
+    elev = np.full(grid.size, np.nan)
     if elev_or is not None:
         # within-stroke shape from the gyro (rotation about the horizontal axis perpendicular to the
         # shaft, which neither the sweep nor the feather can leak into), level from the orientation
@@ -286,10 +293,6 @@ def oar_kinematics(source: str, times_s, accel, gyro, euler, frame: SensorFrame,
             if rec.sum() >= 4:
                 elev[i0:i1] = elev_g[i0:i1] - np.median(elev_g[i0:i1][rec]) + np.median(elev_or[i0:i1][rec])
         quality["height_gyro_vs_orientation_drive_deg"] = float(np.median(np.abs(elev - elev_or)[in_stroke & (rate > 0)])) if (in_stroke & (rate > 0)).any() else None
-        if rig is not None:
-            height = 100.0 * (rig.pin_height_m + rig.outboard_m * np.sin(np.radians(elev)))
-        else:
-            height = elev                              # degrees, when no rigging is known
 
     # --- per-stroke loops ---------------------------------------------------------------------
     strokes: list[StrokeLoop] = []
@@ -317,15 +320,15 @@ def oar_kinematics(source: str, times_s, accel, gyro, euler, frame: SensorFrame,
                 up = np.where((np.abs(feather[b0:b1 - 1]) < FEATHER_SQUARE_DEG) & (np.abs(feather[b0 + 1:b1]) >= FEATHER_SQUARE_DEG))[0]
                 if up.size:
                     ft_after = float((grid[b0 + up[0] + 1] - rel) * 1000.0)
-        h = height[i0:i1]
+        h = elev[i0:i1]
         strokes.append(StrokeLoop(
             t0=float(a0), t1=float(a1), i0=i0, i1=i1,
             catch_deg=float(seg.min()), finish_deg=float(seg.max()), release_s=rel,
             square_before_ms=sq_before, feather_after_ms=ft_after,
             feather_range_deg=float(np.ptp(feather[i0:i1])) if flip is not None else 0.0,
-            min_height_cm=float(np.nanmin(h)) if np.isfinite(h).any() else float("nan"),
-            max_height_cm=float(np.nanmax(h)) if np.isfinite(h).any() else float("nan")))
-    return OarKinematics(source=source, grid=grid, sweep_rate=rate, sweep_angle=angle, height_cm=height,
+            min_elev_deg=float(np.nanmin(h)) if np.isfinite(h).any() else float("nan"),
+            max_elev_deg=float(np.nanmax(h)) if np.isfinite(h).any() else float("nan")))
+    return OarKinematics(source=source, grid=grid, sweep_rate=rate, sweep_angle=angle, elev_deg=elev,
                          feather_deg=feather, strokes=strokes, angle_reference=reference, quality=quality)
 
 

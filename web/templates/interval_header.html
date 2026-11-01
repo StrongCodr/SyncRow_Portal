@@ -2,6 +2,7 @@
   <h3 class="text-lg font-semibold text-text">{{ name or value }}</h3>
   {% if name %}<span class="text-xs text-subtle">{{ value }}</span>{% endif %}
   {% if n is not none %}<span class="text-sm text-subtle" id="res-label">{{ n }} points</span>{% endif %}
+  {% if gps_stats %}<span class="text-sm text-subtle">· {{ gps_stats.distance_text }} · {{ gps_stats.split_text }} average</span>{% endif %}
   <form class="flex items-center gap-1 ml-auto" hx-post="/interval/name" hx-target="#interval-header" hx-swap="innerHTML">
     <input type="hidden" name="tag" value="{{ tag }}"><input type="hidden" name="value" value="{{ value }}"><input type="hidden" name="n" value="{{ n if n is not none else '' }}">
     <input type="text" name="name" value="{{ name }}" placeholder="name this interval" maxlength="80"

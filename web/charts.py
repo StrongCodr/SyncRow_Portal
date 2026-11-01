@@ -388,3 +388,328 @@ def series_payload(imu_df: pd.DataFrame | None, gps_df: pd.DataFrame | None, win
         if m.any():
             out["speed"] = {"x": _times(g["time"][m]), "y": _clean(sp[m])}; out["n"] += int(m.sum())
     return out
+
+
+# ─── Kinematics charts (loops, side view, arcs, mean stroke, attitude, feather) ──────────────────
+# Inputs are srow.analysis.kinematics objects: kin = {source: OarKinematics} in the engine's rower
+# order (so the colours match the sweep chart), hull_att = HullAttitude, flags = {source: set(stroke
+# index)} for strokes the engine did not trust (drawn thin red, left out of the mean).
+
+FLAG_COLOR = "#f7768e"
+WATER_COLOR = "rgba(42,195,222,0.12)"
+MAX_LOOP_STROKES = 400
+
+
+def _kin_colors(kin: dict) -> dict:
+    return {src: PALETTE[i % len(PALETTE)] for i, src in enumerate(kin)}
+
+
+def _stroke_subset(strokes: list, limit: int = MAX_LOOP_STROKES) -> list[int]:
+    n = len(strokes)
+    if n <= limit:
+        return list(range(n))
+    step = n / limit
+    return [int(i * step) for i in range(limit)]
+
+
+def _loop_xy(k, y: str, rig=None):
+    """(x, y) per sample for a loop chart: x = sweep angle, y = sweep rate or blade height."""
+    from srow.analysis.kinematics import blade_height_cm
+    if y == "rate":
+        return k.sweep_angle, k.sweep_rate
+    if rig is not None:
+        return k.sweep_angle, blade_height_cm(k.elev_deg, rig)
+    return k.sweep_angle, k.elev_deg
+
+
+def _mean_loop(k, xs: np.ndarray, ys: np.ndarray, idx: list[int], n: int = 48):
+    """The mean stroke as a loop: y averaged in bins of sweep angle, separately for the drive (rate > 0)
+    and the recovery, so strokes that differ in timing do not shrink the mean. Returns (x, y, drive)
+    with the drive first, catch to finish, then the recovery back, or None."""
+    if not idx:
+        return None
+    sel = np.concatenate([np.arange(k.strokes[i].i0, k.strokes[i].i1) for i in idx])
+    x, y, r = xs[sel], ys[sel], k.sweep_rate[sel]
+    ok = np.isfinite(x) & np.isfinite(y)
+    x, y, r = x[ok], y[ok], r[ok]
+    if x.size < 20:
+        return None
+    lo, hi = np.percentile(x, 2), np.percentile(x, 98)
+    edges = np.linspace(lo, hi, n + 1); mid = (edges[:-1] + edges[1:]) / 2
+    def half(mask):
+        xb, yb = [], []
+        which = np.clip(np.digitize(x[mask], edges) - 1, 0, n - 1)
+        for b_ in range(n):
+            m = which == b_
+            if m.sum() >= 3:
+                xb.append(mid[b_]); yb.append(float(np.mean(y[mask][m])))
+        return np.asarray(xb), np.asarray(yb)
+    dx, dy = half(r > 0); rx, ry = half(r <= 0)
+    if dx.size < 4 or rx.size < 4:
+        return None
+    mx = np.concatenate([dx, rx[::-1], dx[:1]]); my = np.concatenate([dy, ry[::-1], dy[:1]])
+    drive = np.concatenate([np.ones(dx.size, bool), np.zeros(rx.size, bool), np.ones(1, bool)])
+    return mx, my, drive
+
+
+def loop_fig(kin: dict, flags: dict | None = None, y: str = "rate", rig=None, height: int = 360) -> dict | None:
+    """Every stroke of each oar as a faint loop (sweep angle on x), the mean stroke bold, flagged
+    strokes thin red. y = "rate" (deg/s) or "height" (cm above the water with rigging, else degrees of
+    shaft elevation). One panel per oar, side by side."""
+    if not kin:
+        return None
+    flags = flags or {}
+    cols = _kin_colors(kin)
+    n_oar = len(kin)
+    data, layout = [], {**_BASE_LAYOUT, "height": height, "hovermode": "closest", "showlegend": False,
+                       "margin": {"l": 62, "r": 20, "t": 28, "b": 40}, "annotations": [], "shapes": []}
+    gap = 0.06
+    width = (1.0 - gap * (n_oar - 1)) / n_oar
+    ylab = "deg/s" if y == "rate" else ("cm above water" if rig is not None else "shaft elevation (deg)")
+    ymin, ymax = np.inf, -np.inf
+    for p, (src, k) in enumerate(kin.items()):
+        xs, ys = _loop_xy(k, y, rig)
+        if y != "rate" and not np.isfinite(ys).any():
+            continue
+        xa = "x" if p == 0 else f"x{p + 1}"; ya = "y" if p == 0 else f"y{p + 1}"
+        good = [i for i in _stroke_subset(k.strokes) if i not in flags.get(src, set())]
+        bad = [i for i in _stroke_subset(k.strokes) if i in flags.get(src, set())]
+        for group, color, alpha, w in ((good, cols[src], 0.14, 0.8), (bad, FLAG_COLOR, 0.55, 0.8)):
+            if not group:
+                continue
+            gx, gy = [], []
+            for i in group:
+                s = k.strokes[i]
+                gx.extend(_clean(xs[s.i0:s.i1])); gy.extend(_clean(ys[s.i0:s.i1])); gx.append(None); gy.append(None)
+            data.append({"type": "scattergl", "mode": "lines", "x": gx, "y": gy, "hoverinfo": "skip",
+                         "line": {"width": w, "color": color}, "opacity": alpha, "xaxis": xa, "yaxis": ya,
+                         "name": f"{src} {'flagged' if color == FLAG_COLOR else 'strokes'}"})
+            fin = np.asarray([v for v in gy if v is not None], float)
+            if fin.size:
+                ymin, ymax = min(ymin, np.percentile(fin, 1)), max(ymax, np.percentile(fin, 99))
+        m = _mean_loop(k, xs, ys, good)
+        if m is not None:
+            mx, my, drive = m
+            if y == "rate":
+                data.append({"type": "scatter", "mode": "lines", "x": _clean(mx), "y": _clean(my), "name": f"{src} mean",
+                             "line": {"width": 3, "color": cols[src]}, "xaxis": xa, "yaxis": ya})
+            else:
+                for sel, dash, nm in ((drive, "solid", "drive"), (~drive, "dot", "recovery")):
+                    data.append({"type": "scatter", "mode": "lines", "x": _clean(np.where(sel, mx, np.nan)), "y": _clean(np.where(sel, my, np.nan)),
+                                 "name": f"{src} mean {nm}", "line": {"width": 3, "color": cols[src], "dash": dash}, "xaxis": xa, "yaxis": ya,
+                                 "connectgaps": False})
+            i_c, i_f = int(np.argmin(mx)), int(np.argmax(mx))
+            data.append({"type": "scatter", "mode": "markers+text", "x": [float(mx[i_c]), float(mx[i_f])], "y": [float(my[i_c]), float(my[i_f])],
+                         "text": ["catch", "finish"], "textposition": ["middle left", "middle right"], "hoverinfo": "skip",
+                         "marker": {"size": 7, "color": "#c0caf5"}, "textfont": {"size": 11}, "xaxis": xa, "yaxis": ya, "name": "catch/finish"})
+        x0, x1 = p * (width + gap), p * (width + gap) + width
+        layout["xaxis" if p == 0 else f"xaxis{p + 1}"] = {"domain": [x0, x1], "title": "sweep angle (deg, 0 = mid-arc)", "zeroline": True}
+        layout["yaxis" if p == 0 else f"yaxis{p + 1}"] = {"anchor": xa, "title": ylab if p == 0 else "", "zeroline": True,
+                                                            "matches": "y" if p > 0 else None}
+        layout["annotations"].append({"text": str(src), "x": (x0 + x1) / 2, "y": 1.03, "xref": "paper", "yref": "paper",
+                                      "showarrow": False, "font": {"size": 12}})
+        if y != "rate" and rig is not None:
+            layout["shapes"].append({"type": "rect", "xref": f"{xa} domain" if p else "x domain", "yref": ya, "x0": 0, "x1": 1,
+                                     "y0": -200, "y1": 0, "fillcolor": WATER_COLOR, "line": {"width": 0}, "layer": "below"})
+    if not data:
+        return None
+    if np.isfinite(ymin) and np.isfinite(ymax):
+        pad = 0.08 * (ymax - ymin)
+        for key in [k_ for k_ in layout if k_.startswith("yaxis")]:
+            layout[key]["range"] = [float(ymin - pad), float(ymax + pad)]
+    for key in [k_ for k_ in layout if k_.startswith("yaxis")]:
+        layout[key] = {k2: v for k2, v in layout[key].items() if v is not None}
+    return {"data": data, "layout": layout}
+
+
+def arc_fig(kin: dict, height: int | None = None) -> dict | None:
+    """XBoat's top strip: per oar, where the catch and the finish fall stroke by stroke (10-90 %,
+    quartiles, median) and the total arc. Zero is the mid-arc."""
+    if not kin:
+        return None
+    cols = _kin_colors(kin)
+    rows = []
+    for src, k in kin.items():
+        if len(k.strokes) < 3:
+            continue
+        c = np.array([s.catch_deg for s in k.strokes]); f = np.array([s.finish_deg for s in k.strokes])
+        rows.append((src, c, f))
+    if not rows:
+        return None
+    data, shapes, ann = [], [], []
+    for r, (src, c, f) in enumerate(reversed(rows)):
+        y = r
+        for arr in (c, f):
+            p10, p25, p50, p75, p90 = np.percentile(arr, [10, 25, 50, 75, 90])
+            shapes.append({"type": "rect", "x0": float(p10), "x1": float(p90), "y0": y - 0.3, "y1": y + 0.3, "fillcolor": cols[src], "opacity": 0.25, "line": {"width": 0}})
+            shapes.append({"type": "rect", "x0": float(p25), "x1": float(p75), "y0": y - 0.3, "y1": y + 0.3, "fillcolor": cols[src], "opacity": 0.6, "line": {"width": 0}})
+            shapes.append({"type": "line", "x0": float(p50), "x1": float(p50), "y0": y - 0.36, "y1": y + 0.36, "line": {"width": 2, "color": "#c0caf5"}})
+        shapes.append({"type": "rect", "x0": float(np.median(c)), "x1": float(np.median(f)), "y0": y - 0.12, "y1": y + 0.12, "fillcolor": cols[src], "opacity": 0.35, "line": {"width": 0}})
+        ann.append({"x": 1.0, "xref": "paper", "xanchor": "left", "y": y, "yref": "y", "showarrow": False, "xshift": 8,
+                    "text": f"{np.median(c):.0f}° → {np.median(f):.0f}°  ·  arc {np.median(f) - np.median(c):.0f}°", "font": {"size": 12}})
+        data.append({"type": "scatter", "mode": "markers", "x": _clean(np.concatenate([c, f])), "y": [y] * (c.size + f.size), "name": str(src),
+                     "marker": {"size": 3, "color": cols[src], "opacity": 0.0}, "hoverinfo": "x+name"})
+    layout = {**_BASE_LAYOUT, "height": height or (70 + 50 * len(rows)), "showlegend": False, "hovermode": "closest",
+              "margin": {"l": 62, "r": 170, "t": 10, "b": 40}, "shapes": shapes, "annotations": ann,
+              "xaxis": {"title": "catch and finish angle per stroke (deg, 0 = mid-arc): 10–90 %, quartiles, median", "zeroline": True},
+              "yaxis": {"tickvals": list(range(len(rows))), "ticktext": [str(src) for src, _, _ in reversed(rows)], "range": [-0.6, len(rows) - 0.4], "fixedrange": True}}
+    return {"data": data, "layout": layout}
+
+
+def kin_summary(kin: dict) -> list[dict]:
+    """Per-oar headline numbers for the arc chart."""
+    out = []
+    for src, k in kin.items():
+        if not k.strokes:
+            continue
+        arcs = [s.arc_deg for s in k.strokes]
+        sq = [s.square_before_ms for s in k.strokes if s.square_before_ms is not None]
+        ft = [s.feather_after_ms for s in k.strokes if s.feather_after_ms is not None]
+        out.append({"seat": str(src), "n": len(k.strokes), "arc": f"{np.median(arcs):.0f}°",
+                    "square": f"{np.median(sq):.0f} ms before the catch" if sq else "–",
+                    "feather": f"{np.median(ft):.0f} ms after the release" if ft else "–",
+                    "drive_sign": k.quality.get("drive_sign", "assumed"),
+                    "inverted": bool(k.quality.get("engine_sign_inverted", False))})
+    return out
+
+
+def _fold(grid: np.ndarray, y: np.ndarray, catches: np.ndarray, tt: np.ndarray, period_ok=(1.2, 5.0)) -> np.ndarray:
+    rows = []
+    for a, b in zip(catches[:-1], catches[1:]):
+        if period_ok[0] < b - a < period_ok[1] and a + tt[0] >= grid[0] and a + tt[-1] <= grid[-1]:
+            rows.append(np.interp(a + tt, grid, y))
+    return np.asarray(rows)
+
+
+def stroke_time_fig(kin: dict, hull: dict | None, ref: str | None, height: int = 340) -> dict | None:
+    """The mean stroke in time, aligned on the reference oar's catches: hull acceleration (mean ± SD)
+    and hull speed change on the left axis, each oar's sweep rate on the right, with catch, minimum
+    acceleration, minimum speed and release marked. XBoat's "force and hull acceleration vs time",
+    with sweep rate in place of force."""
+    if not kin:
+        return None
+    ref = ref if ref in kin else next(iter(kin))
+    kr = kin[ref]
+    catches = np.array([s.t0 for s in kr.strokes], float)
+    if catches.size < 4:
+        return None
+    T = float(np.median(np.diff(catches)))
+    tt = np.linspace(-0.3, T + 0.2, int((T + 0.5) * 50))
+    cols = _kin_colors(kin)
+    data, shapes, ann = [], [], []
+    hm = None; hull_flipped = False
+    if hull:
+        g, a = next(iter(hull.values()))
+        H = _fold(np.asarray(g, float), np.asarray(a, float), catches, tt)
+        if H.shape[0] >= 3:
+            hm, hs = H.mean(axis=0), H.std(axis=0)
+            # hull_surge's sign test assumes the drive push outweighs the catch check, which is not so
+            # for a scull; physically the sharp minimum (the check) comes at the catch and the push
+            # later in the drive, so if the mean's maximum precedes its minimum the sign is flipped here
+            win = (tt >= 0) & (tt <= T)
+            if win.any() and np.argmax(np.where(win, hm, -np.inf)) < np.argmin(np.where(win, hm, np.inf)):
+                hm = -hm; hull_flipped = True
+            data.append({"type": "scatter", "mode": "lines", "x": _clean(tt), "y": _clean(hm + hs), "line": {"width": 0}, "hoverinfo": "skip", "showlegend": False})
+            data.append({"type": "scatter", "mode": "lines", "x": _clean(tt), "y": _clean(hm - hs), "line": {"width": 0}, "fill": "tonexty",
+                         "fillcolor": "rgba(158,206,106,0.18)", "hoverinfo": "skip", "name": "hull ± SD"})
+            data.append({"type": "scatter", "mode": "lines", "x": _clean(tt), "y": _clean(hm), "name": "hull acceleration (m/s²)", "line": {"width": 2.4, "color": HULL_COLOR}})
+            v = np.concatenate([[0.0], np.cumsum((hm[1:] + hm[:-1]) / 2) * (tt[1] - tt[0])]); v -= v.mean()
+            data.append({"type": "scatter", "mode": "lines", "x": _clean(tt), "y": _clean(v * 5), "name": "hull speed change (m/s × 5)",
+                         "line": {"width": 1.4, "color": "#73daca", "dash": "dot"}})
+            i_min = int(np.argmin(np.where(tt > 0.05, hm, np.inf))); i_v = int(np.argmin(np.where(tt > 0.05, v, np.inf)))
+            shapes += [{"type": "line", "x0": float(tt[i_min]), "x1": float(tt[i_min]), "y0": 0, "y1": 1, "yref": "paper", "line": {"width": 1, "dash": "dash", "color": "#f7768e"}},
+                       {"type": "line", "x0": float(tt[i_v]), "x1": float(tt[i_v]), "y0": 0, "y1": 1, "yref": "paper", "line": {"width": 1, "dash": "dash", "color": "#9ece6a"}}]
+            ann += [{"x": float(tt[i_min]), "y": 1.0, "yref": "paper", "text": "min accel", "showarrow": False, "textangle": -90, "xanchor": "right", "yanchor": "top", "font": {"size": 10, "color": "#f7768e"}},
+                    {"x": float(tt[i_v]), "y": 1.0, "yref": "paper", "text": "min speed", "showarrow": False, "textangle": -90, "xanchor": "right", "yanchor": "top", "font": {"size": 10, "color": "#9ece6a"}}]
+    rel = None
+    for src, k in kin.items():
+        Rm = _fold(k.grid, k.sweep_rate, catches, tt)
+        if Rm.shape[0] < 3:
+            continue
+        rm = Rm.mean(axis=0)
+        data.append({"type": "scatter", "mode": "lines", "x": _clean(tt), "y": _clean(rm), "name": f"{src} sweep rate (deg/s)",
+                     "line": {"width": 2.2, "color": cols[src]}, "yaxis": "y2"})
+        if src == ref:
+            c = np.where((rm[:-1] > 0) & (rm[1:] <= 0) & (tt[:-1] > 0.3))[0]
+            if c.size:
+                rel = float(tt[c[0]])
+    if len(data) == 0:
+        return None
+    shapes.append({"type": "line", "x0": 0, "x1": 0, "y0": 0, "y1": 1, "yref": "paper", "line": {"width": 1, "dash": "dash", "color": "#c0caf5"}})
+    ann.append({"x": 0, "y": 1.0, "yref": "paper", "text": "catch", "showarrow": False, "textangle": -90, "xanchor": "right", "yanchor": "top", "font": {"size": 10}})
+    if rel is not None:
+        shapes.append({"type": "line", "x0": rel, "x1": rel, "y0": 0, "y1": 1, "yref": "paper", "line": {"width": 1, "dash": "dash", "color": "#c0caf5"}})
+        ann.append({"x": rel, "y": 1.0, "yref": "paper", "text": "release", "showarrow": False, "textangle": -90, "xanchor": "right", "yanchor": "top", "font": {"size": 10}})
+    shapes.append({"type": "line", "x0": T, "x1": T, "y0": 0, "y1": 1, "yref": "paper", "line": {"width": 1, "color": "#565f89"}})
+    layout = {**_BASE_LAYOUT, "height": height, "hovermode": "x", "margin": {"l": 62, "r": 62, "t": 10, "b": 40}, "shapes": shapes, "annotations": ann,
+              "xaxis": {"title": f"time from the {ref} catch (s); mean of {catches.size - 1} strokes" + ("; hull sign set by the catch check" if hull_flipped else ""),
+                        "range": [float(tt[0]), float(tt[-1])], "zeroline": False},
+              "yaxis": {"title": "m/s²", "zeroline": True},
+              "yaxis2": {"title": "deg/s", "overlaying": "y", "side": "right", "zeroline": False, "showgrid": False}}
+    return {"data": data, "layout": layout}
+
+
+ATTITUDE_COLORS = ["#bb9af7", "#e0af68"]
+
+
+def attitude_traces(att, t0: float, t1: float, budget: int) -> list[dict]:
+    """Hull roll and pitch traces over [t0, t1] for the attitude chart (full chart and refine payload)."""
+    if att is None:
+        return []
+    series = {"roll (deg)": (att.grid, att.roll_deg), "pitch (deg)": (att.grid, att.pitch_deg)}
+    return _signal_traces(series, t0, t1, budget, width=1.4, colors=ATTITUDE_COLORS)
+
+
+def attitude_fig(att, catches_s, xrange=None, budget: int = 3200) -> dict | None:
+    """The hull unit's roll (set) and pitch over the piece, mounting offset removed, with the catches."""
+    if att is None:
+        return None
+    t0, t1 = _span(xrange, {"a": (att.grid, att.roll_deg)})
+    data = attitude_traces(att, t0, t1, budget)
+    if not data:
+        return None
+    c = _catch_trace(catches_s, t0, t1, "catch (stroke seat)")
+    if c:
+        data.append(c)
+    layout = {**_BASE_LAYOUT, "height": 240, "xaxis": _xaxis("time", xrange),
+              "yaxis": {"title": "deg", "fixedrange": True, "autorange": True, "zeroline": True}}
+    return {"data": data, "layout": layout}
+
+
+def feather_fig(kin: dict, xrange=None) -> dict | None:
+    """Per stroke and oar: how long before the catch the blade was square, and how long after the
+    release it was feathered (ms). One point per stroke on the piece's time axis."""
+    if not kin:
+        return None
+    import datetime as _dt
+    cols = _kin_colors(kin)
+    data = []
+    for src, k in kin.items():
+        for attr, sym, nm in (("square_before_ms", "circle", "squared before the catch"), ("feather_after_ms", "diamond-open", "feathered after the release")):
+            xs = [_dt.datetime.fromtimestamp(s.t0, tz=_dt.timezone.utc).isoformat() for s in k.strokes if getattr(s, attr) is not None]
+            ys = [round(getattr(s, attr)) for s in k.strokes if getattr(s, attr) is not None]
+            if xs:
+                data.append({"type": "scatter", "mode": "markers", "name": f"{src}: {nm}", "x": xs, "y": ys,
+                             "marker": {"size": 5, "color": cols[src], "symbol": sym}})
+    if not data:
+        return None
+    layout = {**_BASE_LAYOUT, "height": 260, "xaxis": _xaxis("time (one point per stroke)", xrange),
+              "yaxis": {"title": "ms", "fixedrange": True, "autorange": True, "zeroline": True}}
+    return {"data": data, "layout": layout}
+
+
+def gps_stats(gdf) -> dict | None:
+    """Distance rowed and average split from the GPS track (usable fixes only)."""
+    from srow.analysis.kinematics import gps_distance, format_split
+    if gdf is None or len(gdf) == 0 or "latitude" not in gdf.columns:
+        return None
+    t = gdf["time"] if "time" in gdf.columns else gdf.index
+    gt = np.array([pd.Timestamp(x).timestamp() for x in t], float)
+    acc = pd.to_numeric(gdf["accuracy"], errors="coerce").to_numpy(float) if "accuracy" in gdf.columns else None
+    d = gps_distance(gt, pd.to_numeric(gdf["latitude"], errors="coerce").to_numpy(float),
+                     pd.to_numeric(gdf["longitude"], errors="coerce").to_numpy(float), acc)
+    if d["distance_m"] <= 0:
+        return None
+    d["distance_text"] = f"{d['distance_m'] / 1000:.2f} km" if d["distance_m"] >= 1000 else f"{d['distance_m']:.0f} m"
+    d["split_text"] = format_split(d["split_s_per_500"])
+    return d

@@ -46,7 +46,7 @@ def test_synthetic_oar_recovers_arc_height_and_feather():
     if np.corrcoef(fr.signal, np.interp(t, t, np.gradient(A)))[0, 1] < 0:
         fr.signal = -fr.signal                                         # the engine sign-aligns to the stroke seat; do it here
     rig = resolve("2x")
-    k = K.oar_kinematics("Seat 1", t, accel, gyro, euler, fr, catches, rig=rig)
+    k = K.oar_kinematics("Seat 1", t, accel, gyro, euler, fr, catches)
     assert k is not None and len(k.strokes) >= 18
     arcs = np.array([s.arc_deg for s in k.strokes])
     assert abs(np.median(arcs) - 70.0) < 3.0
@@ -57,7 +57,8 @@ def test_synthetic_oar_recovers_arc_height_and_feather():
     assert abs(np.median([s.catch_deg for s in k.strokes]) + 35.0) < 4.0
     # blade height: in the water during the drive, out during the recovery (2x rigging: pin 0.24 m, outboard 2.0 m)
     drive = k.sweep_rate > 0
-    h_in, h_out = np.nanmedian(k.height_cm[drive]), np.nanmedian(k.height_cm[~drive])
+    height = K.blade_height_cm(k.elev_deg, rig)
+    h_in, h_out = np.nanmedian(height[drive]), np.nanmedian(height[~drive])
     assert h_in < 0 < h_out, (h_in, h_out)
     assert abs(h_in - 100 * (0.24 + 2.0 * np.sin(np.radians(-8)))) < 4.0
     # feather timing is reported for most strokes
@@ -68,9 +69,9 @@ def test_synthetic_oar_recovers_arc_height_and_feather():
 def test_without_orientation_falls_back_to_the_engine_axis_and_midpoint():
     t, accel, gyro, euler, A, catches = synthetic_oar(seconds=40)
     fr = build_sensor_frame(t, accel, gyro, DEFAULT)
-    k = K.oar_kinematics("Seat 1", t, accel, gyro, None, fr, catches, rig=resolve("2x"))
+    k = K.oar_kinematics("Seat 1", t, accel, gyro, None, fr, catches)
     assert k is not None and k.angle_reference == "midpoint" and not k.quality["orientation"]
-    assert np.isnan(k.height_cm).all()
+    assert np.isnan(k.elev_deg).all()
     assert abs(np.median([(s.catch_deg + s.finish_deg) / 2 for s in k.strokes])) < 3.0
 
 

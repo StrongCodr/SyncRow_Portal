@@ -30,6 +30,7 @@ from srow.services import InfluxService, LocationService
 from srow.analysis.load import load_raw_by_source
 from srow.analysis.engine import analyze_interval
 from srow.analysis.hull import hull_surge, fused_speed
+from srow.analysis import kinematics as kinematics_mod
 from web import charts
 from functools import lru_cache
 
@@ -312,9 +313,49 @@ def _analysis(tag: str, value: str):
                     if gps is None:
                         ok = np.isfinite(gv) & ((ga <= 30.0) if ga is not None else True)
                         gps = (gt[ok] - lag, gv[ok])
-        return {"cross": cross, "oars": oars, "hull": hull, "fused": fused, "gps": gps, "catches": catches}
+        kin, flags = {}, {}
+        for s in cross.rowers:
+            d = by_source.get(s)
+            if d is None or s not in an.frames:
+                continue
+            k = kinematics_mod.oar_kinematics(s, d["times_s"], d["accel"], d["gyro"], d.get("euler"), an.frames[s],
+                                              [c.time_s for c in an.catches.get(s, [])])
+            if k is not None and k.strokes:
+                kin[s] = k
+                flags[s] = _flagged_strokes(k, cross, s)
+        attitude = None
+        for s, d in by_source.items():
+            if s in cross.rowers or d.get("euler") is None:
+                continue
+            attitude = kinematics_mod.hull_attitude(s, d["times_s"], d["gyro"], d["euler"])
+            if attitude is not None:
+                break
+        return {"cross": cross, "oars": oars, "hull": hull, "fused": fused, "gps": gps, "catches": catches,
+                "kin": kin, "flags": flags, "attitude": attitude}
     except Exception:
         return None
+
+
+def _flagged_strokes(k, cross, seat: str) -> set[int]:
+    """Indices of this oar's kinematic strokes the engine did not trust (its per-seat status for the
+    nearest engine stroke is not 'ok', or the stroke is outside the piece). The engine's stroke times
+    may sit at either reversal, so the match is by nearest time within 0.6 of a period."""
+    if cross is None or not cross.strokes or not k.strokes:
+        return set()
+    times = np.array([st.stroke_time_s for st in cross.strokes], float)
+    order = np.argsort(times); times = times[order]; strokes = [cross.strokes[i] for i in order]
+    T = float(np.median([s.period_s for s in k.strokes]))
+    out = set()
+    for i, s in enumerate(k.strokes):
+        j = int(np.searchsorted(times, s.t0))
+        cands = [c for c in (j - 1, j) if 0 <= c < len(strokes) and abs(times[c] - s.t0) <= 0.6 * T]
+        if not cands:
+            out.add(i); continue
+        st = min(cands, key=lambda c: abs(times[c] - s.t0))
+        status = strokes[st].seat_status.get(seat)
+        if not strokes[st].is_piece_stroke() or (status is not None and status != "ok"):
+            out.add(i)
+    return out
 
 
 def _gps_arrays(tag: str, value: str):
@@ -356,6 +397,8 @@ def interval(request: Request, tag: str, value: str):
     bundle = _analysis(tag, value) or {}
     cross = bundle.get("cross")
     xrange = charts.shared_range(cross, df, gdf)   # every chart opens on the same span
+    setup = _run_setup(value)
+    kin, flags = bundle.get("kin") or {}, bundle.get("flags") or {}
 
     return templates.TemplateResponse(
         request=request, name="chart.html",
@@ -363,8 +406,16 @@ def interval(request: Request, tag: str, value: str):
             "tag": tag,
             "value": value,
             "name": _interval_name(value),
-            "setup": _run_setup(value),
+            "setup": setup,
+            "gps_stats": charts.gps_stats(gdf),
             "n": len(df) if df is not None else 0,
+            "arc_json": json.dumps(charts.arc_fig(kin)),
+            "kin_summary": charts.kin_summary(kin),
+            "loop_json": json.dumps(charts.loop_fig(kin, flags, y="rate")),
+            "side_json": json.dumps(charts.loop_fig(kin, flags, y="height", rig=setup["rig"])),
+            "stroke_time_json": json.dumps(charts.stroke_time_fig(kin, bundle.get("hull"), cross.reference if cross else None)),
+            "attitude_json": json.dumps(charts.attitude_fig(bundle.get("attitude"), bundle.get("catches"), xrange)),
+            "feather_json": json.dumps(charts.feather_fig(kin, xrange)),
             "offsets_json": json.dumps(charts.offsets_fig(cross, xrange)),
             "offsets_summary": charts.offsets_summary(cross),
             "offsets_boat": charts.offsets_boat(cross),
@@ -399,6 +450,7 @@ def _series(tag: str, value: str, start: dt.datetime, stop: dt.datetime, px: int
     b = _analysis(tag, value) or {}
     payload.update(charts.signal_payload(b.get("oars"), b.get("hull"), b.get("catches"), start.timestamp(), stop.timestamp(), budget,
                                          fused=b.get("fused"), gps=b.get("gps")))
+    payload["attitude"] = charts.attitude_traces(b.get("attitude"), start.timestamp(), stop.timestamp(), budget)
     payload["start"], payload["stop"], payload["px"] = start.isoformat(), stop.isoformat(), px
     return payload
 
