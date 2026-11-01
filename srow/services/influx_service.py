@@ -7,6 +7,8 @@ Provides methods to:
 - Delete intervals
 """
 
+import logging
+import time
 from datetime import datetime
 
 import certifi
@@ -92,6 +94,9 @@ def _parse_interval_datetime(interval_value: str) -> str:
     return interval_value
 
 
+logger = logging.getLogger(__name__)
+
+
 class InfluxService:
     """Service for querying IMU data from InfluxDB.
 
@@ -170,6 +175,11 @@ schema.tagValues(bucket: "{_escape_flux_string(self.settings.bucket)}", tag: "{t
                     seen.add(key)
                     results.append({"tag": tag, "value": str(val)})
 
+        # The tag index keeps an interval's id after its rows are deleted, so drop ids with no data.
+        live = self.fetch_live_interval_ids()
+        if live is not None:
+            results = [r for r in results if r["tag"] != "intervalId" or r["value"] in live]
+
         # Sort by value (timestamp order)
         results = sorted(results, key=lambda x: x["value"])
 
@@ -182,6 +192,38 @@ schema.tagValues(bucket: "{_escape_flux_string(self.settings.bucket)}", tag: "{t
             item["label"] = f"{idx}. {item['name'] or dt_str}"
 
         return results
+
+    LIVE_IDS_TTL_S = 120.0
+
+    def fetch_live_interval_ids(self) -> set[str] | None:
+        """Interval ids that still hold data, or None if the query fails.
+
+        schema.tagValues reads the tag index, which keeps a deleted interval's id until the index
+        is rebuilt, so the sidebar would list runs that no longer exist. first() is pushed down per
+        series, so this reads one point per unit and interval, not the data. Cached briefly because
+        the sidebar is rebuilt on every page and after every rename.
+        """
+        cache = getattr(self, "_live_ids_cache", None)
+        if cache and time.monotonic() - cache[0] < self.LIVE_IDS_TTL_S:
+            return cache[1]
+        flux = f'''
+from(bucket: "{_escape_flux_string(self.settings.bucket)}")
+  |> range(start: {self.settings.query_lookback})
+  |> filter(fn: (r) => r._measurement == "imu" or r._measurement == "phone_location")
+  |> filter(fn: (r) => r._field == "ax" or r._field == "lat")
+  |> first()
+  |> keep(columns: ["intervalId"])
+  |> group()
+  |> distinct(column: "intervalId")
+'''
+        try:
+            tables = self.query_api().query(flux, org=self.settings.effective_org())
+        except Exception:
+            logger.warning("live interval id query failed; listing the tag index as is", exc_info=True)
+            return None
+        ids = {str(rec.get_value()) for t in tables for rec in t.records if rec.get_value()}
+        self._live_ids_cache = (time.monotonic(), ids)
+        return ids
 
     NAMES_MEASUREMENT = "interval_meta"
 
