@@ -54,6 +54,7 @@ class SensorFrame:
     stroke_axis_ok: bool       # a stroke-band axis was actually found (else PC1 kept blindly)
     held: np.ndarray           # bool per sample: gyro row identical to previous (zero-order-hold)
     flip: np.ndarray | None = None   # feather-flip (shaft) axis in the sensor frame, when one was found
+    drive_sign: str = "assumed"    # how the sign of `signal` was fixed: "elevation" (physical) or "assumed"
 
 
 def _autocorr_hz(proj: np.ndarray, times_s: np.ndarray) -> float:

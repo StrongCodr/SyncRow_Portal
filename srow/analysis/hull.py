@@ -29,10 +29,12 @@ def surge_axis(times_s, accel_g, catches_s=None, fs_out: float = 25.0) -> np.nda
 
 
 def hull_surge(times_s, accel_g, catches_s=None, fs_out: float = 25.0, lp_hz: float = 4.0, _want_axis: bool = False):
-    """(grid_s, surge_mps2): the hull's fore-aft acceleration on a uniform grid, drive positive.
+    """(grid_s, surge_mps2): the hull's fore-aft acceleration on a uniform grid, drive positive
+    (the catch check is the negative excursion at each catch).
 
     times_s: (N,) epoch seconds; accel_g: (N,3) accelerometer in g (held rows, identical to the
-    previous row, are dropped before interpolation); catches_s: catch times for the sign test.
+    previous row, are dropped before interpolation); catches_s: the stroke seat's catch times, which
+    set the sign (the check comes before the push within a stroke).
     Returns (None, None) if there is too little data for a stroke-band axis.
     """
     t = np.asarray(times_s, float); a = np.asarray(accel_g, float)
@@ -65,6 +67,21 @@ def hull_surge(times_s, accel_g, catches_s=None, fs_out: float = 25.0, lp_hz: fl
         d = s - s.mean(); sign = float(np.mean(d ** 3))          # right-skewed when the drive is positive
     if sign < 0:
         s = -s; axis = -axis
+    # The test above assumes the drive push outweighs the catch check, which is not so for a scull
+    # (the check is the larger excursion). With enough catches the shape decides instead: within the
+    # mean stroke the sharp minimum (the check) comes at the catch and the push later in the drive, so
+    # if the mean's maximum precedes its minimum the sign is flipped.
+    if catches_s is not None and len(catches_s) >= 4:
+        c = np.sort(np.asarray(catches_s, float)); T = float(np.median(np.diff(c)))
+        if 1.0 < T < 5.0:
+            tt = np.linspace(0, T, max(int(T * fs_out), 8)); rows = []
+            for a0 in c:
+                if a0 >= grid[0] and a0 + T <= grid[-1]:
+                    rows.append(np.interp(a0 + tt, grid, s))
+            if len(rows) >= 3:
+                hm = np.mean(rows, axis=0)
+                if int(np.argmax(hm)) < int(np.argmin(hm)):
+                    s = -s; axis = -axis
     if _want_axis:
         return axis
     return grid, s

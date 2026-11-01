@@ -241,7 +241,9 @@ def test_hull_surge_finds_forward_axis_and_sign():
     rng = np.random.default_rng(3)
     fs, dur, f = 50.0, 120.0, 0.4
     t = np.arange(0, dur, 1 / fs); phase = (t * f) % 1.0
-    surge = np.where(phase < 0.4, 3.0 * np.sin(np.pi * phase / 0.4), -1.0)   # m/s^2: short push, long weak pull
+    # m/s^2, the shape of a scull's stroke: a deep, short check right at the catch, the push later in the
+    # drive, a weak negative through the recovery
+    surge = -4.0 * np.exp(-((phase - 0.02) / 0.05) ** 2) + 2.5 * np.exp(-((phase - 0.28) / 0.12) ** 2) - 0.3
     fwd = _unit(rng.normal(size=3)); down = _unit(np.cross(fwd, rng.normal(size=3)))
     acc = (np.outer(surge, fwd) + np.outer(np.ones_like(t), down) * G0) / G0 + rng.normal(scale=0.01, size=(t.size, 3))
     catches = list(np.arange(0, dur, 1 / f))
@@ -249,9 +251,10 @@ def test_hull_surge_finds_forward_axis_and_sign():
     assert g is not None
     ref = np.interp(g - 1.7e9, t, surge)
     assert np.corrcoef(s, ref)[0, 1] > 0.95
-    assert s[(g - 1.7e9) % (1 / f) < 0.2].mean() > 0            # drive positive
-    g2, s2 = hull_surge(t + 1.7e9, acc, None)                   # sign from skew alone
-    assert np.corrcoef(s2, ref)[0, 1] > 0.95
+    ph = ((g - 1.7e9) * f) % 1.0
+    assert s[(ph > 0.2) & (ph < 0.4)].mean() > 0 > s[ph < 0.05].mean()   # push positive, check negative
+    g2, s2 = hull_surge(t + 1.7e9, acc, None)                   # no catches: the shape is right, the sign is a guess
+    assert abs(np.corrcoef(s2, ref)[0, 1]) > 0.95
 
 
 def test_decimate_keeps_shape_within_budget():

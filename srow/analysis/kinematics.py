@@ -186,6 +186,38 @@ def _crossings_down(x: np.ndarray, level: float) -> np.ndarray:
     return np.where((x[:-1] > level) & (x[1:] <= level))[0] + 1
 
 
+def physical_drive_sign(times_s, accel, gyro, euler, frame: SensorFrame, min_level: float = 0.3) -> tuple[float, dict]:
+    """(+1 or -1, info): the factor that makes `frame.signal` positive during the drive, from the
+    unit's orientation: the shaft tilts more steeply down toward the blade while the blade is in the
+    water. +1 with info {"drive_sign": "assumed"} when there is no orientation or no shaft axis.
+    Only samples where the signal is clearly swinging (|z| > min_level) are compared, so idle
+    stretches do not vote."""
+    if euler is None or frame.flip is None:
+        return 1.0, {"drive_sign": "assumed"}
+    times_s = np.asarray(times_s, float); accel = np.asarray(accel, float); gyro = np.asarray(gyro, float)
+    euler = np.asarray(euler, float)
+    if not np.isfinite(euler[:, :2]).any():
+        return 1.0, {"drive_sign": "assumed"}
+    times_s, accel, gyro, euler = _fresh(times_s, accel, gyro, euler)
+    if times_s.size < 64:
+        return 1.0, {"drive_sign": "assumed"}
+    gb = gravity_in_body(euler[:, 0], euler[:, 1])
+    an = accel / np.maximum(np.linalg.norm(accel, axis=1), _EPS)[:, None]
+    if np.median(np.einsum("ij,ij->i", gb, an)) < 0:
+        gb = -gb
+    elev = np.degrees(np.arcsin(np.clip(gb @ frame.flip, -1.0, 1.0)))
+    sig = np.interp(times_s, frame.times_s, frame.signal)
+    if np.nanmedian(elev) > 0:                       # the shaft always tilts down toward the blade
+        elev = -elev
+    pos = sig > min_level; neg = sig < -min_level
+    if pos.sum() < 32 or neg.sum() < 32:
+        return 1.0, {"drive_sign": "assumed"}
+    e_pos, e_neg = float(np.nanmedian(elev[pos])), float(np.nanmedian(elev[neg]))
+    inverted = e_pos > e_neg                         # the positive half is the shallower one: it is the recovery
+    return (-1.0 if inverted else 1.0), {"drive_sign": "elevation", "engine_sign_inverted": inverted,
+                                         "shaft_elev_pos_deg": e_pos, "shaft_elev_neg_deg": e_neg}
+
+
 def blade_height_cm(elev_deg, rig) -> np.ndarray:
     """Blade height above the water from the shaft's elevation and the rigging (pin height above the
     water, outboard). The water line is computed, not measured: see the design's caveat."""

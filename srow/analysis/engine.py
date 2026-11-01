@@ -39,6 +39,17 @@ def analyze_interval(by_source: dict[str, dict],
             frames[src] = f
 
     rowers = [s for s, f in frames.items() if is_rowing(f)]
+    # The frame's sign is deterministic but not physical: fix it from the shaft tilt where the unit's
+    # orientation is available (see kinematics.physical_drive_sign), so an up-crossing is a catch and
+    # not a finish. Units without an orientation keep their sign and are aligned to the reference.
+    from .kinematics import physical_drive_sign
+    for s in rowers:
+        d = by_source[s]
+        sign, info = physical_drive_sign(d["times_s"], d["accel"], d["gyro"], d.get("euler"), frames[s])
+        if sign < 0:
+            frames[s].signal = -frames[s].signal
+            frames[s].sweep = -frames[s].sweep
+        frames[s].drive_sign = info["drive_sign"]
     flipped: list[str] = []
     if len(rowers) >= 2:
         ref = max(rowers, key=lambda s: seat_index(s) if seat_index(s) is not None else -1)
