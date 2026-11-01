@@ -1,5 +1,6 @@
 <div class="space-y-6 max-w-6xl">
   <div id="interval-header">{% include "interval_header.html" %}</div>
+  {% set active_tab = "dashboard" %}{% include "tabs.html" %}
 
   <section>
     <h4 class="text-sm font-medium text-subtle mb-1">Latency per stroke (ms behind + / ahead −)</h4>

@@ -32,6 +32,7 @@ from srow.analysis.engine import analyze_interval
 from srow.analysis.hull import hull_surge, fused_speed
 from srow.analysis import kinematics as kinematics_mod
 from web import charts
+from web import replay as replay_mod
 from functools import lru_cache
 
 BASE_DIR = Path(__file__).parent
@@ -427,6 +428,36 @@ def interval(request: Request, tag: str, value: str):
             "track_json": json.dumps(charts.track_data(gdf)),
         },
     )
+
+
+@app.get("/interval/replay_view", response_class=HTMLResponse)
+def interval_replay_view(request: Request, tag: str, value: str):
+    """The Replay tab for an interval (an HTML fragment for #content); the data comes from /interval/replay."""
+    if not _user(request):
+        resp = HTMLResponse("", status_code=401); resp.headers["HX-Redirect"] = "/login"; return resp
+    try:
+        gdf = location.load_track(tag_name=tag, interval_value=value)
+    except Exception:
+        gdf = None
+    return templates.TemplateResponse(request=request, name="replay.html", context={
+        "tag": tag, "value": value, "name": _interval_name(value), "setup": _run_setup(value), "n": None,
+        "gps_stats": charts.gps_stats(gdf), "track_json": json.dumps(charts.track_data(gdf))})
+
+
+@app.get("/interval/replay")
+def interval_replay(request: Request, tag: str, value: str):
+    """Everything the Replay tab animates, on one 25 Hz grid (see web.replay)."""
+    if not _user(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        gdf = location.load_track(tag_name=tag, interval_value=value)
+    except Exception:
+        gdf = None
+    bundle = _analysis(tag, value) or {}
+    doc = replay_mod.replay_payload(bundle, gdf, _run_setup(value)["rig"])
+    if doc is None:
+        return JSONResponse({"error": "no oar data for this interval"}, status_code=404)
+    return JSONResponse(doc)
 
 
 def _series(tag: str, value: str, start: dt.datetime, stop: dt.datetime, px: int) -> dict:

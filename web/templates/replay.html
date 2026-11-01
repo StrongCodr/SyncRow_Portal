@@ -1,0 +1,271 @@
+<div class="space-y-4 max-w-6xl" id="replay-root">
+  <div id="interval-header">{% include "interval_header.html" %}</div>
+  {% set active_tab = "replay" %}{% include "tabs.html" %}
+
+  <section>
+    <h4 class="text-sm font-medium text-subtle mb-1">The run: boat speed and each seat's offset per stroke. Click anywhere to move the replay there.</h4>
+    <div id="rp-overview" style="height:200px;"></div>
+  </section>
+
+  <div class="flex flex-wrap items-center gap-2 text-sm" id="rp-transport">
+    <button id="rp-play" class="px-3 py-1 rounded border border-border text-text hover:border-accent hover:text-accent">▶ play</button>
+    <button id="rp-prev" class="px-2 py-1 rounded border border-border text-subtle hover:border-accent hover:text-accent" title="previous stroke (←)">⏮ stroke</button>
+    <button id="rp-next" class="px-2 py-1 rounded border border-border text-subtle hover:border-accent hover:text-accent" title="next stroke (→)">stroke ⏭</button>
+    <span class="w-2"></span>
+    {% for sp in (1, 2, 3, 5) %}<button class="rp-speed px-2 py-1 rounded border border-border text-subtle hover:border-accent hover:text-accent" data-speed="{{ sp }}">{{ sp }}×</button>{% endfor %}
+    <span class="ml-auto text-subtle tabular-nums" id="rp-clock">loading…</span>
+  </div>
+
+  <div class="grid grid-cols-3 md:grid-cols-6 gap-2 text-sm" id="rp-tiles">
+    {% for key, label in (("dt", "Δt bow − stroke"), ("rho", "ρ"), ("speed", "speed"), ("split", "split"), ("dist", "distance"), ("dv", "Δv this stroke")) %}
+    <div class="rounded border border-border bg-surface px-3 py-2"><div class="text-[10px] uppercase tracking-wider text-subtle">{{ label }}</div><div class="text-lg font-semibold text-text tabular-nums" id="rp-tile-{{ key }}">–</div></div>
+    {% endfor %}
+  </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-7 gap-3">
+    <div class="lg:col-span-3 rounded border border-border bg-surface p-2">
+      <div class="text-xs text-subtle mb-1">Stroke in time: hull acceleration (m/s², left) and each oar's sweep rate (deg/s, right)</div>
+      <canvas id="rp-time" class="w-full" height="260"></canvas>
+    </div>
+    <div class="lg:col-span-2 rounded border border-border bg-surface p-2">
+      <div class="text-xs text-subtle mb-1">Side view: blade height above the water (cm) against sweep angle; current stroke bold, last three fading</div>
+      <canvas id="rp-side" class="w-full" height="260"></canvas>
+    </div>
+    <div class="lg:col-span-2 rounded border border-border bg-surface p-2">
+      <div class="text-xs text-subtle mb-1">Sweep rate (deg/s) against sweep angle</div>
+      <canvas id="rp-loop" class="w-full" height="260"></canvas>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-3">
+    <div class="lg:col-span-2">
+      <div class="text-xs text-subtle mb-1">Where on the river: click the track to move the replay there</div>
+      <div id="rp-map" style="height:320px;" class="rounded border border-border overflow-hidden"></div>
+    </div>
+    <div>
+      <div class="text-xs text-subtle mb-1">Strokes (click to jump)</div>
+      <div id="rp-strokes" class="rounded border border-border bg-surface overflow-y-auto text-xs tabular-nums" style="height:320px;"></div>
+    </div>
+  </div>
+
+  <script>
+  (function () {
+    var url = '/interval/replay?tag={{ tag|urlencode }}&value={{ value|urlencode }}';
+    var track = {{ track_json | safe }};
+    var D = null, tp = 0, playing = false, speed = 1, lastFrame = null, curStroke = -1;
+    var css = function (n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); };
+    var RED = '#f7768e', WATER = 'rgba(42,195,222,0.14)';
+    var root = document.getElementById('replay-root');
+    function $(id) { return document.getElementById(id); }
+    function fmtClock(t) { var s = Math.max(0, Math.round(t)); return Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2); }
+    function fmtSplit(s) { if (s == null) return '–'; var m = Math.floor(s / 60), r = Math.round(s - m * 60); return m + ':' + ('0' + r).slice(-2) + ' /500'; }
+    function idx(t) { return Math.max(0, Math.min(D.grid.n - 1, Math.round((t - D.grid.t0) * D.grid.hz))); }
+    function strokeAt(t) {            // reference stroke index containing t (or the last one before it)
+      var s = D.strokes, lo = 0, hi = s.length - 1;
+      if (!s.length || t < s[0].t0) return 0;
+      while (lo < hi) { var m = (lo + hi + 1) >> 1; if (s[m].t0 <= t) lo = m; else hi = m - 1; }
+      return lo;
+    }
+    function oarStrokeAt(o, t) { var s = o.strokes, lo = 0, hi = s.length - 1; if (!s.length || t < s[0].t0) return -1; while (lo < hi) { var m = (lo + hi + 1) >> 1; if (s[m].t0 <= t) lo = m; else hi = m - 1; } return lo; }
+
+    // ----- canvas helpers -----
+    function setup(c) { var r = c.getBoundingClientRect(); var dpr = window.devicePixelRatio || 1; c.width = Math.round(r.width * dpr); c.height = Math.round(260 * dpr); var g = c.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); return {g: g, w: r.width, h: 260}; }
+    function axes(g, w, h, m, xr, yr, xlab, ylab, y2r, y2lab) {
+      g.fillStyle = css('--surface'); g.fillRect(0, 0, w, h);
+      g.strokeStyle = css('--border'); g.lineWidth = 1; g.strokeRect(m.l, m.t, w - m.l - m.r, h - m.t - m.b);
+      g.fillStyle = css('--subtle'); g.font = '10px sans-serif'; g.textAlign = 'center';
+      var tx = ticks(xr[0], xr[1]); for (var i = 0; i < tx.length; i++) { var x = m.l + (tx[i] - xr[0]) / (xr[1] - xr[0]) * (w - m.l - m.r); g.beginPath(); g.moveTo(x, h - m.b); g.lineTo(x, h - m.b + 4); g.stroke(); g.fillText(fmtTick(tx[i]), x, h - m.b + 14); }
+      g.textAlign = 'right';
+      var ty = ticks(yr[0], yr[1]); for (var j = 0; j < ty.length; j++) { var y = h - m.b - (ty[j] - yr[0]) / (yr[1] - yr[0]) * (h - m.t - m.b); g.fillText(fmtTick(ty[j]), m.l - 4, y + 3); }
+      if (y2r) { g.textAlign = 'left'; var t2 = ticks(y2r[0], y2r[1]); for (var k = 0; k < t2.length; k++) { var yy = h - m.b - (t2[k] - y2r[0]) / (y2r[1] - y2r[0]) * (h - m.t - m.b); g.fillText(fmtTick(t2[k]), w - m.r + 4, yy + 3); } }
+      g.textAlign = 'center'; g.fillText(xlab, (m.l + w - m.r) / 2, h - 3);
+      g.save(); g.translate(10, (m.t + h - m.b) / 2); g.rotate(-Math.PI / 2); g.fillText(ylab, 0, 0); g.restore();
+      if (y2lab) { g.save(); g.translate(w - 8, (m.t + h - m.b) / 2); g.rotate(Math.PI / 2); g.fillText(y2lab, 0, 0); g.restore(); }
+      if (yr[0] < 0 && yr[1] > 0) { var y0 = h - m.b - (0 - yr[0]) / (yr[1] - yr[0]) * (h - m.t - m.b); g.strokeStyle = css('--border'); g.beginPath(); g.moveTo(m.l, y0); g.lineTo(w - m.r, y0); g.stroke(); }
+      if (xr[0] < 0 && xr[1] > 0) { var x0 = m.l + (0 - xr[0]) / (xr[1] - xr[0]) * (w - m.l - m.r); g.strokeStyle = css('--border'); g.beginPath(); g.moveTo(x0, m.t); g.lineTo(x0, h - m.b); g.stroke(); }
+    }
+    function ticks(a, b) { var span = b - a, step = Math.pow(10, Math.floor(Math.log10(span / 4))); if (span / step > 8) step *= 2; if (span / step > 8) step *= 2.5; var out = []; for (var v = Math.ceil(a / step) * step; v <= b + 1e-9; v += step) out.push(v); return out; }
+    function fmtTick(v) { return Math.abs(v) >= 100 || Number.isInteger(v) ? String(Math.round(v)) : v.toFixed(1); }
+    function polyline(g, xs, ys, i0, i1, color, width, alpha, mapx, mapy) {
+      g.strokeStyle = color; g.lineWidth = width; g.globalAlpha = alpha; g.beginPath(); var pen = false;
+      for (var i = i0; i < i1; i++) { var x = xs[i], y = ys[i]; if (x == null || y == null) { pen = false; continue; } var px = mapx(x), py = mapy(y); if (!pen) { g.moveTo(px, py); pen = true; } else g.lineTo(px, py); }
+      g.stroke(); g.globalAlpha = 1;
+    }
+
+    // ----- panels -----
+    var ranges = null;
+    function computeRanges() {
+      var rateMax = 60, hMin = -20, hMax = 20, aMax = 2;
+      D.oars.forEach(function (o) {
+        rateMax = Math.max(rateMax, pct(o.rate, 0.995));
+        if (o.height) { hMin = Math.min(hMin, pct(o.height, 0.01)); hMax = Math.max(hMax, pct(o.height, 0.99)); }
+      });
+      if (D.hull) aMax = Math.max(aMax, pct(D.hull.accel.map(function (v) { return v == null ? null : Math.abs(v); }), 0.995));
+      var angMax = 10; D.oars.forEach(function (o) { angMax = Math.max(angMax, pct(o.angle.map(function (v) { return v == null ? null : Math.abs(v); }), 0.995)); });
+      ranges = {rate: [-rateMax * 1.05, rateMax * 1.05], height: [hMin - 3, hMax + 3], accel: [-aMax * 1.1, aMax * 1.1], ang: [-angMax * 1.1, angMax * 1.1]};
+    }
+    function pct(arr, q) { var v = arr.filter(function (x) { return x != null; }).sort(function (a, b) { return a - b; }); return v.length ? v[Math.floor(q * (v.length - 1))] : 0; }
+
+    function drawTime() {
+      var c = setup($('rp-time')), g = c.g, w = c.w, h = c.h, m = {l: 40, t: 8, r: 40, b: 26};
+      var s = D.strokes[curStroke] || {t0: tp, t1: tp + 2.5};
+      var xr = [s.t0 - 0.3, s.t1 + 0.3];
+      axes(g, w, h, m, [xr[0] - s.t0, xr[1] - s.t0], ranges.accel, 'time in stroke (s)', 'm/s²', ranges.rate, 'deg/s');
+      var mapx = function (t) { return m.l + (t - xr[0]) / (xr[1] - xr[0]) * (w - m.l - m.r); };
+      var mapA = function (v) { return h - m.b - (v - ranges.accel[0]) / (ranges.accel[1] - ranges.accel[0]) * (h - m.t - m.b); };
+      var mapR = function (v) { return h - m.b - (v - ranges.rate[0]) / (ranges.rate[1] - ranges.rate[0]) * (h - m.t - m.b); };
+      var i0 = idx(xr[0]), i1 = idx(xr[1]) + 1, ip = idx(tp) + 1;
+      var tt = []; for (var i = 0; i < D.grid.n; i++) tt.push(null); // lazily use index-based time mapping
+      var tx = function (i) { return D.grid.t0 + i / D.grid.hz; };
+      function line(ys, mapy, color, width) {
+        // dim: the whole window; bright: up to the playhead
+        g.strokeStyle = color; g.lineWidth = width;
+        [[i0, i1, 0.3], [i0, Math.min(ip, i1), 1.0]].forEach(function (seg) {
+          g.globalAlpha = seg[2]; g.beginPath(); var pen = false;
+          for (var k = seg[0]; k < seg[1]; k++) { var y = ys[k]; if (y == null) { pen = false; continue; } var px = mapx(tx(k)), py = mapy(y); if (!pen) { g.moveTo(px, py); pen = true; } else g.lineTo(px, py); }
+          g.stroke();
+        });
+        g.globalAlpha = 1;
+      }
+      if (D.hull) line(D.hull.accel, mapA, D.hull.color, 2);
+      D.oars.forEach(function (o) { line(o.rate, mapR, o.color, 2); });
+      // each oar's catches in the window
+      D.oars.forEach(function (o) { o.strokes.forEach(function (st) { if (st.t0 >= xr[0] && st.t0 <= xr[1]) { g.strokeStyle = o.color; g.globalAlpha = 0.6; g.setLineDash([2, 3]); g.beginPath(); g.moveTo(mapx(st.t0), m.t); g.lineTo(mapx(st.t0), h - m.b); g.stroke(); g.setLineDash([]); g.globalAlpha = 1; } }); });
+      g.strokeStyle = css('--text'); g.lineWidth = 1.2; g.beginPath(); g.moveTo(mapx(tp), m.t); g.lineTo(mapx(tp), h - m.b); g.stroke();
+    }
+    function drawLoop(canvasId, key, yr, ylab, water) {
+      var c = setup($(canvasId)), g = c.g, w = c.w, h = c.h, m = {l: 40, t: 8, r: 10, b: 26};
+      axes(g, w, h, m, ranges.ang, yr, 'sweep angle (deg)', ylab);
+      var mapx = function (v) { return m.l + (v - ranges.ang[0]) / (ranges.ang[1] - ranges.ang[0]) * (w - m.l - m.r); };
+      var mapy = function (v) { return h - m.b - (v - yr[0]) / (yr[1] - yr[0]) * (h - m.t - m.b); };
+      if (water && yr[0] < 0) { g.fillStyle = WATER; g.fillRect(m.l, mapy(0), w - m.l - m.r, mapy(yr[0]) - mapy(0)); }
+      D.oars.forEach(function (o) {
+        var ys = o[key]; if (!ys) return;
+        var k = oarStrokeAt(o, tp); if (k < 0) return;
+        var ghosts = [k - 3, k - 2, k - 1], alphas = [0.15, 0.25, 0.4];
+        ghosts.forEach(function (j, n) { if (j >= 0) { var st = o.strokes[j]; polyline(g, o.angle, ys, st.i0, st.i1, st.flagged ? RED : o.color, 1, alphas[n], mapx, mapy); } });
+        var cur = o.strokes[k], ip = Math.min(idx(tp) + 1, cur.i1);
+        polyline(g, o.angle, ys, cur.i0, ip, cur.flagged ? RED : o.color, 2.5, 1, mapx, mapy);
+        var li = ip - 1; if (li >= cur.i0 && o.angle[li] != null && ys[li] != null) { g.fillStyle = o.color; g.strokeStyle = '#fff'; g.lineWidth = 1; g.beginPath(); g.arc(mapx(o.angle[li]), mapy(ys[li]), 4.5, 0, 2 * Math.PI); g.fill(); g.stroke(); }
+      });
+      g.fillStyle = css('--subtle'); g.font = '10px sans-serif'; g.textAlign = 'left';
+      D.oars.forEach(function (o, i) { g.fillStyle = o.color; g.fillText(o.name, m.l + 6 + i * 110, m.t + 12); });
+    }
+
+    // ----- overview (Plotly) -----
+    function overview() {
+      var data = [];
+      var t0 = D.grid.t0;
+      if (D.hull && D.hull.speed.some(function (v) { return v != null; })) {
+        var xs = [], ys = []; for (var i = 0; i < D.grid.n; i += 5) { xs.push(i / D.grid.hz); ys.push(D.hull.speed[i] == null ? null : D.hull.speed[i] * 3.6); }
+        data.push({type: 'scattergl', mode: 'lines', name: 'speed (km/h)', x: xs, y: ys, line: {width: 1.2, color: '#73daca'}, connectgaps: false});
+      }
+      var seats = {}; D.strokes.forEach(function (s) { Object.keys(s.dt).forEach(function (k) { if (!seats[k]) seats[k] = {x: [], y: []}; if (s.ok[k]) { seats[k].x.push(s.t0 - t0); seats[k].y.push(s.dt[k]); } }); });
+      var i = 0; Object.keys(seats).forEach(function (k) { data.push({type: 'scattergl', mode: 'markers', name: k + ' offset (ms)', x: seats[k].x, y: seats[k].y, yaxis: 'y2', marker: {size: 4, color: (D.oars.filter(function (o) { return o.name === k; })[0] || {color: '#7aa2f7'}).color}}); i++; });
+      var layout = {paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)', margin: {l: 50, r: 50, t: 10, b: 30}, showlegend: true, legend: {orientation: 'h', y: 1.2},
+                    xaxis: {title: 'time in the run (s)', range: [0, D.grid.n / D.grid.hz], fixedrange: true}, yaxis: {title: 'km/h', fixedrange: true},
+                    yaxis2: {title: 'ms', overlaying: 'y', side: 'right', fixedrange: true, showgrid: false, range: [-250, 250]},
+                    shapes: [{type: 'line', x0: 0, x1: 0, y0: 0, y1: 1, yref: 'paper', line: {color: css('--text'), width: 1.5}}, {type: 'rect', x0: 0, x1: 0, y0: 0, y1: 1, yref: 'paper', fillcolor: 'rgba(122,162,247,0.08)', line: {width: 0}, layer: 'below'}]};
+      Plotly.newPlot('rp-overview', data, layout, {responsive: true, displaylogo: false, displayModeBar: false});
+      if (window.restyleCharts) restyleCharts();
+      $('rp-overview').on('plotly_click', function (ev) { if (ev.points && ev.points.length) seek(t0 + ev.points[0].x); });
+      $('rp-overview').addEventListener('click', function (e) {   // clicks on empty plot area too
+        var gd = $('rp-overview'), xa = gd._fullLayout && gd._fullLayout.xaxis; if (!xa) return;
+        var bb = gd.getBoundingClientRect(); var px = e.clientX - bb.left - xa._offset; if (px < 0 || px > xa._length) return;
+        seek(t0 + xa.p2d(px));
+      });
+    }
+    function playhead() { var x = tp - D.grid.t0; Plotly.relayout('rp-overview', {'shapes[0].x0': x, 'shapes[0].x1': x, 'shapes[1].x1': x}); }
+
+    // ----- map -----
+    var map = null, marker = null, trail = null;
+    function initMap() {
+      if (window._srowMap) { try { window._srowMap.remove(); } catch (e) {} window._srowMap = null; }
+      if (!track || !window.L) { $('rp-map').innerHTML = '<div class="text-subtle text-sm p-3">no GPS track for this interval</div>'; return; }
+      map = L.map('rp-map', {scrollWheelZoom: true}); window._srowMap = map;
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom: 19, attribution: '© OpenStreetMap'}).addTo(map);
+      var line = L.polyline(track.points, {color: '#7aa2f7', weight: 3, opacity: 0.5}).addTo(map); map.fitBounds(line.getBounds(), {padding: [20, 20]});
+      trail = L.polyline([], {color: '#2ac3de', weight: 4}).addTo(map);
+      marker = L.circleMarker(track.points[0], {radius: 7, color: '#fff', weight: 2, fillColor: '#2ac3de', fillOpacity: 1}).addTo(map);
+      line.on('click', function (e) { if (!D || !D.gps.length) return; var best = 0, bd = 1e18; D.gps.forEach(function (f, i) { var d = Math.pow(f[1] - e.latlng.lat, 2) + Math.pow(f[2] - e.latlng.lng, 2); if (d < bd) { bd = d; best = i; } }); seek(D.gps[best][0]); });
+      requestAnimationFrame(function () { map.invalidateSize(); }); setTimeout(function () { map.invalidateSize(); }, 300);
+    }
+    var gpsPos = 0;
+    function gpsAt(t) {   // interpolated [lat, lon, dist, ok]
+      var g = D.gps; if (!g.length) return null;
+      while (gpsPos < g.length - 1 && g[gpsPos + 1][0] <= t) gpsPos++;
+      while (gpsPos > 0 && g[gpsPos][0] > t) gpsPos--;
+      var a = g[gpsPos], b = g[Math.min(gpsPos + 1, g.length - 1)];
+      if (t < a[0] - 3 || t > b[0] + 3) return [a[1], a[2], a[3], false];
+      var f = (b[0] > a[0]) ? Math.max(0, Math.min(1, (t - a[0]) / (b[0] - a[0]))) : 0;
+      return [a[1] + f * (b[1] - a[1]), a[2] + f * (b[2] - a[2]), a[3] + f * (b[3] - a[3]), (b[0] - a[0]) <= 3];
+    }
+    function drawMap() {
+      if (!map || !D.gps.length) return;
+      var p = gpsAt(tp); if (!p) return;
+      marker.setLatLng([p[0], p[1]]); marker.setStyle({fillColor: p[3] ? '#2ac3de' : '#565f89'});
+      var pts = []; for (var i = gpsPos; i >= 0 && D.gps[i][0] > tp - 60; i--) pts.push([D.gps[i][1], D.gps[i][2]]);
+      trail.setLatLngs(pts.reverse());
+      return p;
+    }
+
+    // ----- tiles and stroke list -----
+    function seatOffset(s) { var ks = Object.keys(s.dt); if (!ks.length) return null; return s.dt[ks[0]]; }
+    function tiles(p) {
+      var s = D.strokes[curStroke]; if (!s) return;
+      var ks = Object.keys(s.dt);
+      $('rp-tile-dt').textContent = ks.length ? ((s.dt[ks[0]] >= 0 ? '+' : '') + s.dt[ks[0]] + ' ms') : '–';
+      $('rp-tile-rho').textContent = ks.length && s.rho[ks[0]] != null ? s.rho[ks[0]].toFixed(2) : '–';
+      $('rp-tile-speed').textContent = s.speed != null ? s.speed.toFixed(2) + ' m/s' : '–';
+      $('rp-tile-split').textContent = fmtSplit(s.split);
+      $('rp-tile-dist').textContent = p ? (p[2] >= 1000 ? (p[2] / 1000).toFixed(2) + ' km' : Math.round(p[2]) + ' m') : '–';
+      $('rp-tile-dv').textContent = s.dv != null ? s.dv.toFixed(2) + ' m/s' : '–';
+      $('rp-clock').textContent = 'stroke ' + (curStroke + 1) + ' of ' + D.strokes.length + ' · ' + fmtClock(tp - D.grid.t0) + ' · ' + s.spm.toFixed(1) + ' spm · ' + speed + '×';
+      var row = $('rp-row-' + curStroke); if (row) { var prev = document.querySelector('#rp-strokes .rp-cur'); if (prev) prev.classList.remove('rp-cur', 'bg-base', 'text-accent'); row.classList.add('rp-cur', 'bg-base', 'text-accent'); if (playing) row.scrollIntoView({block: 'nearest'}); }
+    }
+    function strokeList() {
+      var html = '<table class="w-full"><thead><tr class="text-subtle"><th class="text-left px-2 py-1">#</th><th class="text-right px-2">Δt ms</th><th class="text-right px-2">ρ</th><th class="text-right px-2">m/s</th><th class="text-right px-2">spm</th></tr></thead><tbody>';
+      D.strokes.forEach(function (s, i) {
+        var ks = Object.keys(s.dt); var flagged = !s.piece || (ks.length && !s.ok[ks[0]]);
+        html += '<tr id="rp-row-' + i + '" data-i="' + i + '" class="cursor-pointer hover:bg-base ' + (flagged ? 'text-red-400' : 'text-text') + '"><td class="px-2 py-0.5">' + (i + 1) + '</td><td class="text-right px-2">' + (ks.length ? s.dt[ks[0]] : '–') + '</td><td class="text-right px-2">' + (ks.length && s.rho[ks[0]] != null ? s.rho[ks[0]].toFixed(2) : '–') + '</td><td class="text-right px-2">' + (s.speed != null ? s.speed.toFixed(2) : '–') + '</td><td class="text-right px-2">' + s.spm.toFixed(1) + '</td></tr>';
+      });
+      $('rp-strokes').innerHTML = html + '</tbody></table>';
+      $('rp-strokes').addEventListener('click', function (e) { var tr = e.target.closest('tr[data-i]'); if (tr) seek(D.strokes[+tr.dataset.i].t0); });
+    }
+
+    // ----- transport -----
+    function render() { curStroke = strokeAt(tp); drawTime(); drawLoop('rp-side', 'height', ranges.height, 'cm above water', true); drawLoop('rp-loop', 'rate', ranges.rate, 'deg/s', false); var p = drawMap(); tiles(p); }
+    var lastHead = 0;
+    function frame(ts) {
+      if (!playing) return;
+      if (lastFrame != null) { tp += (ts - lastFrame) / 1000 * speed; }
+      lastFrame = ts;
+      var tEnd = D.grid.t0 + (D.grid.n - 1) / D.grid.hz;
+      if (tp >= tEnd) { tp = tEnd; pause(); }
+      render();
+      if (ts - lastHead > 100) { playhead(); lastHead = ts; }
+      if (playing) requestAnimationFrame(frame);
+    }
+    function play() { if (!D) return; playing = true; lastFrame = null; $('rp-play').textContent = '⏸ pause'; requestAnimationFrame(frame); }
+    function pause() { playing = false; $('rp-play').textContent = '▶ play'; playhead(); }
+    function seek(t) { if (!D) return; tp = Math.max(D.grid.t0, Math.min(t, D.grid.t0 + (D.grid.n - 1) / D.grid.hz)); render(); playhead(); }
+    $('rp-play').addEventListener('click', function () { playing ? pause() : play(); });
+    $('rp-prev').addEventListener('click', function () { if (!D) return; var k = strokeAt(tp); seek(D.strokes[Math.max(0, (tp - D.strokes[k].t0 > 0.3) ? k : k - 1)].t0); });
+    $('rp-next').addEventListener('click', function () { if (!D) return; var k = strokeAt(tp); seek(D.strokes[Math.min(D.strokes.length - 1, k + 1)].t0); });
+    document.querySelectorAll('.rp-speed').forEach(function (b) { b.addEventListener('click', function () { speed = +b.dataset.speed; document.querySelectorAll('.rp-speed').forEach(function (o) { o.classList.remove('text-accent', 'border-accent'); }); b.classList.add('text-accent', 'border-accent'); if (D) tiles(gpsAt(tp)); }); });
+    document.querySelector('.rp-speed[data-speed="1"]').classList.add('text-accent', 'border-accent');
+    function onKey(e) { if (!document.body.contains(root)) { document.removeEventListener('keydown', onKey); return; } if (e.target && /input|select|textarea/i.test(e.target.tagName)) return;
+      if (e.code === 'Space') { e.preventDefault(); playing ? pause() : play(); } else if (e.code === 'ArrowLeft') { e.preventDefault(); $('rp-prev').click(); } else if (e.code === 'ArrowRight') { e.preventDefault(); $('rp-next').click(); } }
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('resize', function () { if (D && document.body.contains(root)) render(); });
+
+    initMap();
+    fetch(url, {credentials: 'same-origin'}).then(function (r) { return r.ok ? r.json() : r.json().then(function (e) { throw new Error(e.error || r.status); }); })
+      .then(function (d) {
+        D = d; if (!D.strokes.length) throw new Error('no strokes');
+        computeRanges(); overview(); strokeList(); tp = D.strokes[0].t0; render(); playhead();
+      })
+      .catch(function (err) { $('rp-clock').textContent = 'replay unavailable: ' + err.message; });
+  })();
+  </script>
+</div>
