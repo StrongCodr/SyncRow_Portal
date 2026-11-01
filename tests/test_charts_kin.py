@@ -58,3 +58,18 @@ def test_attitude_and_gps_stats():
     st = charts.gps_stats(gdf)
     assert st and 340 < st["distance_m"] < 370 and st["split_text"].startswith("2:4")
     assert charts.gps_stats(None) is None
+
+
+def test_loop_chart_hides_flagged_by_default_carries_stroke_ids_and_draws_a_crew_mean_for_four():
+    kin = _kin()
+    fig = charts.loop_fig(kin, {"Seat 1": {0}}, y="rate")
+    flagged = [tr for tr in fig["data"] if tr["meta"]["kind"] == "flagged"]
+    assert flagged and flagged[0]["visible"] is False
+    strokes = [tr for tr in fig["data"] if tr["meta"]["kind"] == "strokes"][0]
+    assert strokes["customdata"][0][0] == 1 and strokes["customdata"][0][1] > 1.7e9     # [stroke index, catch time]
+    assert not any(tr["meta"]["kind"] == "crew" for tr in fig["data"])
+    four = {f"Seat {i}": kin["Seat 1" if i % 2 else "Seat 2"] for i in range(1, 5)}
+    fig4 = charts.loop_fig(four, None, y="rate")
+    assert sum(tr["meta"]["kind"] == "crew" for tr in fig4["data"]) == 4 and "yaxis4" in fig4["layout"]
+    assert fig4["layout"]["yaxis3"]["domain"][1] < fig4["layout"]["yaxis"]["domain"][0]       # second row below the first
+    assert charts.kin_summary(kin, {"Seat 1": {0, 2}})[0]["flagged"] == 2

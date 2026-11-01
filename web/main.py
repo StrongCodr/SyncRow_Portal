@@ -411,7 +411,8 @@ def interval(request: Request, tag: str, value: str):
             "gps_stats": charts.gps_stats(gdf),
             "n": len(df) if df is not None else 0,
             "arc_json": json.dumps(charts.arc_fig(kin)),
-            "kin_summary": charts.kin_summary(kin),
+            "kin_summary": charts.kin_summary(kin, flags),
+            "flagged_total": sum(len(v) for v in flags.values()), "strokes_total": sum(len(k.strokes) for k in kin.values()),
             "loop_json": json.dumps(charts.loop_fig(kin, flags, y="rate")),
             "side_json": json.dumps(charts.loop_fig(kin, flags, y="height", rig=setup["rig"])),
             "stroke_time_json": json.dumps(charts.stroke_time_fig(kin, bundle.get("hull"), cross.reference if cross else None)),
@@ -431,7 +432,7 @@ def interval(request: Request, tag: str, value: str):
 
 
 @app.get("/interval/replay_view", response_class=HTMLResponse)
-def interval_replay_view(request: Request, tag: str, value: str):
+def interval_replay_view(request: Request, tag: str, value: str, t: float | None = None):
     """The Replay tab for an interval (an HTML fragment for #content); the data comes from /interval/replay."""
     if not _user(request):
         resp = HTMLResponse("", status_code=401); resp.headers["HX-Redirect"] = "/login"; return resp
@@ -441,7 +442,7 @@ def interval_replay_view(request: Request, tag: str, value: str):
         gdf = None
     return templates.TemplateResponse(request=request, name="replay.html", context={
         "tag": tag, "value": value, "name": _interval_name(value), "setup": _run_setup(value), "n": None,
-        "gps_stats": charts.gps_stats(gdf), "track_json": json.dumps(charts.track_data(gdf))})
+        "start_at": t, "gps_stats": charts.gps_stats(gdf), "track_json": json.dumps(charts.track_data(gdf))})
 
 
 @app.get("/interval/replay")

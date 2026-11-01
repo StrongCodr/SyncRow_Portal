@@ -169,11 +169,17 @@
       Plotly.newPlot('rp-overview', data, layout, {responsive: true, displaylogo: false, displayModeBar: false});
       if (window.restyleCharts) restyleCharts();
       $('rp-overview').on('plotly_click', function (ev) { if (ev.points && ev.points.length) seek(t0 + ev.points[0].x); });
-      $('rp-overview').addEventListener('click', function (e) {   // clicks on empty plot area too
+      // click or drag anywhere on the overview to scrub
+      var scrubbing = false;
+      function scrubTo(e) {
         var gd = $('rp-overview'), xa = gd._fullLayout && gd._fullLayout.xaxis; if (!xa) return;
-        var bb = gd.getBoundingClientRect(); var px = e.clientX - bb.left - xa._offset; if (px < 0 || px > xa._length) return;
-        seek(t0 + xa.p2d(px));
-      });
+        var bb = gd.getBoundingClientRect(); var px = e.clientX - bb.left - xa._offset;
+        px = Math.max(0, Math.min(xa._length, px)); seek(t0 + xa.p2d(px));
+      }
+      var ov = $('rp-overview');
+      ov.addEventListener('pointerdown', function (e) { if (e.button !== 0) return; scrubbing = true; ov.setPointerCapture(e.pointerId); scrubTo(e); });
+      ov.addEventListener('pointermove', function (e) { if (scrubbing) scrubTo(e); });
+      ['pointerup', 'pointercancel'].forEach(function (n) { ov.addEventListener(n, function (e) { if (scrubbing) { scrubbing = false; scrubTo(e); } }); });
     }
     function playhead() { var x = tp - D.grid.t0; Plotly.relayout('rp-overview', {'shapes[0].x0': x, 'shapes[0].x1': x, 'shapes[1].x1': x}); }
 
@@ -263,7 +269,11 @@
     fetch(url, {credentials: 'same-origin'}).then(function (r) { return r.ok ? r.json() : r.json().then(function (e) { throw new Error(e.error || r.status); }); })
       .then(function (d) {
         D = d; if (!D.strokes.length) throw new Error('no strokes');
-        computeRanges(); overview(); strokeList(); tp = D.strokes[0].t0; render(); playhead();
+        computeRanges(); overview(); strokeList(); tp = D.strokes[0].t0;
+        var startAt = {{ start_at if start_at is not none else 'null' }};
+        if (startAt) { tp = startAt; var row = $('rp-row-' + strokeAt(tp)); }
+        render(); playhead();
+        if (startAt) { var r = $('rp-row-' + strokeAt(tp)); if (r) r.scrollIntoView({block: 'center'}); }
       })
       .catch(function (err) { $('rp-clock').textContent = 'replay unavailable: ' + err.message; });
   })();

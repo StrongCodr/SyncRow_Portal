@@ -453,64 +453,83 @@ def _mean_loop(k, xs: np.ndarray, ys: np.ndarray, idx: list[int], n: int = 48):
 
 
 def loop_fig(kin: dict, flags: dict | None = None, y: str = "rate", rig=None, height: int = 360) -> dict | None:
-    """Every stroke of each oar as a faint loop (sweep angle on x), the mean stroke bold, flagged
-    strokes thin red. y = "rate" (deg/s) or "height" (cm above the water with rigging, else degrees of
-    shaft elevation). One panel per oar, side by side."""
+    """Every stroke of each oar as a faint loop (sweep angle on x), the mean stroke bold, strokes the
+    engine did not trust thin red and hidden until shown (the page's "show flagged" toggle). y = "rate"
+    (deg/s) or "height" (cm above the water with rigging, else degrees of shaft elevation). One panel
+    per oar, two panels per row; with more than two oars the crew mean is drawn dashed in every panel.
+    Each point carries [stroke index, catch time] as customdata so a click can pick the stroke, and
+    every trace carries meta {"src", "kind"} (kind: strokes, flagged, mean, crew, marks)."""
     if not kin:
         return None
     flags = flags or {}
     cols = _kin_colors(kin)
-    n_oar = len(kin)
-    data, layout = [], {**_BASE_LAYOUT, "height": height, "hovermode": "closest", "showlegend": False,
+    panels = [(src, k) for src, k in kin.items() if y == "rate" or np.isfinite(_loop_xy(k, y, rig)[1]).any()]
+    if not panels:
+        return None
+    n = len(panels); ncol = min(n, 2); nrow = (n + ncol - 1) // ncol
+    data, layout = [], {**_BASE_LAYOUT, "height": height * nrow if nrow > 1 else height, "hovermode": "closest", "showlegend": False,
                        "margin": {"l": 62, "r": 20, "t": 28, "b": 40}, "annotations": [], "shapes": []}
-    gap = 0.06
-    width = (1.0 - gap * (n_oar - 1)) / n_oar
+    gapx, gapy = 0.06, 0.12
+    width = (1.0 - gapx * (ncol - 1)) / ncol; rowh = (1.0 - gapy * (nrow - 1)) / nrow
     ylab = "deg/s" if y == "rate" else ("cm above water" if rig is not None else "shaft elevation (deg)")
     ymin, ymax = np.inf, -np.inf
-    for p, (src, k) in enumerate(kin.items()):
+    means = {}
+    for p_, (src, k) in enumerate(panels):
         xs, ys = _loop_xy(k, y, rig)
-        if y != "rate" and not np.isfinite(ys).any():
-            continue
-        xa = "x" if p == 0 else f"x{p + 1}"; ya = "y" if p == 0 else f"y{p + 1}"
+        xa = "x" if p_ == 0 else f"x{p_ + 1}"; ya = "y" if p_ == 0 else f"y{p_ + 1}"
         good = [i for i in _stroke_subset(k.strokes) if i not in flags.get(src, set())]
         bad = [i for i in _stroke_subset(k.strokes) if i in flags.get(src, set())]
-        for group, color, alpha, w in ((good, cols[src], 0.14, 0.8), (bad, FLAG_COLOR, 0.55, 0.8)):
+        for group, kind, color, alpha, w in ((good, "strokes", cols[src], 0.14, 0.8), (bad, "flagged", FLAG_COLOR, 0.55, 0.8)):
             if not group:
                 continue
-            gx, gy = [], []
+            gx, gy, gc = [], [], []
             for i in group:
-                s = k.strokes[i]
-                gx.extend(_clean(xs[s.i0:s.i1])); gy.extend(_clean(ys[s.i0:s.i1])); gx.append(None); gy.append(None)
-            data.append({"type": "scattergl", "mode": "lines", "x": gx, "y": gy, "hoverinfo": "skip",
+                st = k.strokes[i]
+                seg_x = _clean(xs[st.i0:st.i1]); seg_y = _clean(ys[st.i0:st.i1])
+                gx.extend(seg_x); gy.extend(seg_y); gc.extend([[i, round(st.t0, 3)]] * len(seg_x)); gx.append(None); gy.append(None); gc.append(None)
+            data.append({"type": "scattergl", "mode": "lines", "x": gx, "y": gy, "customdata": gc, "hoverinfo": "skip",
                          "line": {"width": w, "color": color}, "opacity": alpha, "xaxis": xa, "yaxis": ya,
-                         "name": f"{src} {'flagged' if color == FLAG_COLOR else 'strokes'}"})
+                         "name": f"{src} {kind}", "meta": {"src": str(src), "kind": kind}, "visible": kind != "flagged"})
             fin = np.asarray([v for v in gy if v is not None], float)
-            if fin.size:
+            if fin.size and kind == "strokes":
                 ymin, ymax = min(ymin, np.percentile(fin, 1)), max(ymax, np.percentile(fin, 99))
         m = _mean_loop(k, xs, ys, good)
         if m is not None:
+            means[src] = m
             mx, my, drive = m
             if y == "rate":
                 data.append({"type": "scatter", "mode": "lines", "x": _clean(mx), "y": _clean(my), "name": f"{src} mean",
-                             "line": {"width": 3, "color": cols[src]}, "xaxis": xa, "yaxis": ya})
+                             "line": {"width": 3, "color": cols[src]}, "xaxis": xa, "yaxis": ya, "meta": {"src": str(src), "kind": "mean"}})
             else:
                 for sel, dash, nm in ((drive, "solid", "drive"), (~drive, "dot", "recovery")):
                     data.append({"type": "scatter", "mode": "lines", "x": _clean(np.where(sel, mx, np.nan)), "y": _clean(np.where(sel, my, np.nan)),
                                  "name": f"{src} mean {nm}", "line": {"width": 3, "color": cols[src], "dash": dash}, "xaxis": xa, "yaxis": ya,
-                                 "connectgaps": False})
+                                 "connectgaps": False, "meta": {"src": str(src), "kind": "mean"}})
             i_c, i_f = int(np.argmin(mx)), int(np.argmax(mx))
             data.append({"type": "scatter", "mode": "markers+text", "x": [float(mx[i_c]), float(mx[i_f])], "y": [float(my[i_c]), float(my[i_f])],
                          "text": ["catch", "finish"], "textposition": ["middle left", "middle right"], "hoverinfo": "skip",
-                         "marker": {"size": 7, "color": "#c0caf5"}, "textfont": {"size": 11}, "xaxis": xa, "yaxis": ya, "name": "catch/finish"})
-        x0, x1 = p * (width + gap), p * (width + gap) + width
-        layout["xaxis" if p == 0 else f"xaxis{p + 1}"] = {"domain": [x0, x1], "title": "sweep angle (deg, 0 = mid-arc)", "zeroline": True}
-        layout["yaxis" if p == 0 else f"yaxis{p + 1}"] = {"anchor": xa, "title": ylab if p == 0 else "", "zeroline": True,
-                                                            "matches": "y" if p > 0 else None}
-        layout["annotations"].append({"text": str(src), "x": (x0 + x1) / 2, "y": 1.03, "xref": "paper", "yref": "paper",
+                         "marker": {"size": 7, "color": "#c0caf5"}, "textfont": {"size": 11}, "xaxis": xa, "yaxis": ya, "name": "catch/finish",
+                         "meta": {"src": str(src), "kind": "marks"}})
+        col, row = p_ % ncol, p_ // ncol
+        x0, x1 = col * (width + gapx), col * (width + gapx) + width
+        y1 = 1.0 - row * (rowh + gapy); y0 = y1 - rowh
+        layout["xaxis" if p_ == 0 else f"xaxis{p_ + 1}"] = {"domain": [x0, x1], "anchor": ya, "title": "sweep angle (deg, 0 = mid-arc)" if row == nrow - 1 else "", "zeroline": True}
+        layout["yaxis" if p_ == 0 else f"yaxis{p_ + 1}"] = {"domain": [y0, y1], "anchor": xa, "title": ylab if col == 0 else "", "zeroline": True,
+                                                              "matches": "y" if p_ > 0 else None}
+        layout["annotations"].append({"text": str(src), "x": (x0 + x1) / 2, "y": y1 + 0.03 / max(nrow, 1), "xref": "paper", "yref": "paper",
                                       "showarrow": False, "font": {"size": 12}})
         if y != "rate" and rig is not None:
-            layout["shapes"].append({"type": "rect", "xref": f"{xa} domain" if p else "x domain", "yref": ya, "x0": 0, "x1": 1,
+            layout["shapes"].append({"type": "rect", "xref": f"{xa} domain" if p_ else "x domain", "yref": ya, "x0": 0, "x1": 1,
                                      "y0": -200, "y1": 0, "fillcolor": WATER_COLOR, "line": {"width": 0}, "layer": "below"})
+    if n > 2 and len(means) >= 2:
+        # the crew mean: the oars' mean loops averaged at equal phases of the loop
+        L = min(len(m[0]) for m in means.values())
+        cx = np.mean([np.interp(np.linspace(0, 1, L), np.linspace(0, 1, len(m[0])), m[0]) for m in means.values()], axis=0)
+        cy = np.mean([np.interp(np.linspace(0, 1, L), np.linspace(0, 1, len(m[1])), m[1]) for m in means.values()], axis=0)
+        for p_, (src, k) in enumerate(panels):
+            xa = "x" if p_ == 0 else f"x{p_ + 1}"; ya = "y" if p_ == 0 else f"y{p_ + 1}"
+            data.append({"type": "scatter", "mode": "lines", "x": _clean(cx), "y": _clean(cy), "name": "crew mean", "hoverinfo": "name",
+                         "line": {"width": 2, "color": "#9aa5b1", "dash": "dash"}, "xaxis": xa, "yaxis": ya, "meta": {"src": "crew", "kind": "crew"}})
     if not data:
         return None
     if np.isfinite(ymin) and np.isfinite(ymax):
@@ -556,9 +575,10 @@ def arc_fig(kin: dict, height: int | None = None) -> dict | None:
     return {"data": data, "layout": layout}
 
 
-def kin_summary(kin: dict) -> list[dict]:
-    """Per-oar headline numbers for the arc chart."""
+def kin_summary(kin: dict, flags: dict | None = None) -> list[dict]:
+    """Per-oar headline numbers for the arc chart, with the count of strokes the engine flagged."""
     out = []
+    flags = flags or {}
     for src, k in kin.items():
         if not k.strokes:
             continue
@@ -569,7 +589,8 @@ def kin_summary(kin: dict) -> list[dict]:
                     "square": f"{np.median(sq):.0f} ms before the catch" if sq else "–",
                     "feather": f"{np.median(ft):.0f} ms after the release" if ft else "–",
                     "drive_sign": k.quality.get("drive_sign", "assumed"),
-                    "inverted": bool(k.quality.get("engine_sign_inverted", False))})
+                    "inverted": bool(k.quality.get("engine_sign_inverted", False)),
+                    "flagged": len(flags.get(src, set()))})
     return out
 
 

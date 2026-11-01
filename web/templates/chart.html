@@ -54,12 +54,16 @@
   </section>
 
   <section>
-    <h4 class="text-sm font-medium text-subtle mb-1">Sweep rate against sweep angle (every stroke faint, the mean bold, flagged strokes red)</h4>
+    <h4 class="text-sm font-medium text-subtle mb-1">Sweep rate against sweep angle (every stroke faint, the mean bold; click a stroke to pick it)
+      <label class="ml-3 text-xs text-subtle cursor-pointer"><input type="checkbox" class="show-flagged mr-1">show flagged ({{ flagged_total }} of {{ strokes_total }})</label>
+      <span id="loop-pick" class="ml-3 text-xs"></span></h4>
     <div id="chart-loop" style="height:360px;"></div>
   </section>
 
   <section>
-    <h4 class="text-sm font-medium text-subtle mb-1">The oar seen from the side: blade height above the water against sweep angle (stern on the left; the water line is computed from the rigging, drive solid, recovery dotted)</h4>
+    <h4 class="text-sm font-medium text-subtle mb-1">The oar seen from the side: blade height above the water against sweep angle (stern on the left; the water line is computed from the rigging, drive solid, recovery dotted)
+      <label class="ml-3 text-xs text-subtle cursor-pointer"><input type="checkbox" class="show-flagged mr-1">show flagged</label>
+      <span id="side-pick" class="ml-3 text-xs"></span></h4>
     <div id="chart-side" style="height:360px;"></div>
   </section>
 
@@ -116,6 +120,39 @@
         else { el.innerHTML = '<div class="text-subtle text-sm p-3">no data</div>'; }
       });
       if (window.restyleCharts) restyleCharts();
+
+      // Loop charts: "show flagged" toggles the red strokes (hidden by default); a click on a stroke
+      // highlights it in both loop charts and offers to replay it.
+      function flaggedIdx(gd) { var out = []; (gd.data || []).forEach(function (tr, i) { if (tr.meta && tr.meta.kind === 'flagged') out.push(i); }); return out; }
+      document.querySelectorAll('.show-flagged').forEach(function (cb) {
+        cb.addEventListener('change', function () {
+          document.querySelectorAll('.show-flagged').forEach(function (o) { o.checked = cb.checked; });
+          ['chart-loop', 'chart-side'].forEach(function (id) { var gd = document.getElementById(id); var idx = flaggedIdx(gd); if (idx.length) Plotly.restyle(id, {visible: cb.checked}, idx); });
+        });
+      });
+      var pickTraces = {};
+      function pickStroke(src, idx, t0) {
+        ['chart-loop', 'chart-side'].forEach(function (id) {
+          var gd = document.getElementById(id); if (!gd || !gd.data) return;
+          if (pickTraces[id] !== undefined) { try { Plotly.deleteTraces(id, pickTraces[id]); } catch (e) {} pickTraces[id] = undefined; }
+          var tr = null; gd.data.forEach(function (t) { if (t.meta && t.meta.src === src && (t.meta.kind === 'strokes' || t.meta.kind === 'flagged')) { var has = (t.customdata || []).some(function (c) { return c && c[0] === idx; }); if (has) tr = t; } });
+          if (!tr) return;
+          var xs = [], ys = []; tr.customdata.forEach(function (c, i) { if (c && c[0] === idx) { xs.push(tr.x[i]); ys.push(tr.y[i]); } });
+          Plotly.addTraces(id, {type: 'scatter', mode: 'lines', x: xs, y: ys, xaxis: tr.xaxis, yaxis: tr.yaxis, hoverinfo: 'skip', name: 'picked',
+                                line: {width: 3.5, color: '#ff9e64'}, meta: {kind: 'picked'}});
+          pickTraces[id] = gd.data.length - 1;
+        });
+        var link = '<span class="text-text">' + src + ', stroke ' + (idx + 1) + '</span> <button class="ml-1 px-2 py-0.5 rounded border border-border text-subtle hover:text-accent hover:border-accent" ' +
+                   'hx-get="/interval/replay_view?tag={{ tag|urlencode }}&value={{ value|urlencode }}&t=' + t0 + '" hx-target="#content">▶ replay it</button>';
+        ['loop-pick', 'side-pick'].forEach(function (id) { var el = document.getElementById(id); el.innerHTML = link; if (window.htmx) htmx.process(el); });
+      }
+      ['chart-loop', 'chart-side'].forEach(function (id) {
+        var gd = document.getElementById(id); if (!gd || !gd.on) return;
+        gd.on('plotly_click', function (ev) {
+          var p = ev.points && ev.points[0]; if (!p || !p.customdata || !p.data.meta) return;
+          pickStroke(p.data.meta.src, p.customdata[0], p.customdata[1]);
+        });
+      });
 
       // Resolution-adaptive data: whatever span is visible, ask the server for at most ~4 points per
       // pixel of it (raw frames once the span is short enough), for the IMU and speed charts.
